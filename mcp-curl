@@ -53,7 +53,15 @@ INIT_RESPONSE=$(curl -si \
     -X POST "$MCP_URL" \
     -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mcp-curl","version":"1"}}}')
 
-SESSION=$(echo "$INIT_RESPONSE" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
+# Extract HTTP status from the first line of the response
+HTTP_INIT_STATUS=$(echo "$INIT_RESPONSE" | head -1 | grep -oP '\d{3}' | head -1 || true)
+if [[ $HTTP_INIT_STATUS == "404" ]]; then
+    die "Server returned 404 — it is probably running SSE transport, not streamable-http.
+Restart with: ./open5gs-mcp restart --transport streamable-http"
+fi
+
+# || true prevents set -e from killing the script when grep finds no header
+SESSION=$(echo "$INIT_RESPONSE" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r' || true)
 [[ -n $SESSION ]] || die "No Mcp-Session-Id in response — is the server running at $MCP_URL?"
 
 # Send initialized notification (fire-and-forget, no response expected)
