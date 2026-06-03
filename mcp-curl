@@ -11,6 +11,59 @@
 
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+mcp-curl — send a single MCP JSON-RPC call over streamable-http
+
+USAGE
+  ./mcp-curl [METHOD] [PARAMS_JSON]
+
+ARGUMENTS
+  METHOD       JSON-RPC method (default: tools/list)
+  PARAMS_JSON  JSON params object (default: {})
+
+COMMANDS
+  tools/list                           List all registered tools
+  tools/call  '{"name":"<tool>","arguments":{...}}'   Call a tool
+
+ENV
+  MCP_URL      MCP endpoint URL (default: http://localhost:8080/mcp)
+
+NOTES
+  Requires the server to be running with streamable-http transport:
+    ./open5gs-mcp restart --transport streamable-http
+  After testing, restore SSE for ollmcp:
+    ./open5gs-mcp restart
+
+EXAMPLES
+  ./mcp-curl tools/list
+
+  ./mcp-curl tools/call '{"name":"nf_lifecycle","arguments":{"action":"status"}}'
+  ./mcp-curl tools/call '{"name":"nf_lifecycle","arguments":{"action":"status","nf":["amf","smf"]}}'
+  ./mcp-curl tools/call '{"name":"nf_lifecycle","arguments":{"action":"start"}}'
+
+  ./mcp-curl tools/call '{"name":"system_health_snapshot","arguments":{}}'
+  ./mcp-curl tools/call '{"name":"system_health_snapshot","arguments":{"log_minutes":30}}'
+
+  ./mcp-curl tools/call '{"name":"subscriber_crud","arguments":{"operation":"list"}}'
+  ./mcp-curl tools/call '{"name":"subscriber_crud","arguments":{"operation":"read","imsi":"999700000000001"}}'
+  ./mcp-curl tools/call '{"name":"subscriber_crud","arguments":{"operation":"create","imsi":"999700000000002","data":{"security":{"k":"465B5CE8B199B49FAA5F0A2EE238A6BC","opc":"E8ED289DEBA952E4283B54E88E6183CA"}}}}'
+  ./mcp-curl tools/call '{"name":"subscriber_crud","arguments":{"operation":"delete","imsi":"999700000000002"}}'
+
+  ./mcp-curl tools/call '{"name":"list_ue_sessions","arguments":{}}'
+  ./mcp-curl tools/call '{"name":"list_ue_sessions","arguments":{"imsi_filter":"999700","include_idle":false}}'
+
+  ./mcp-curl tools/call '{"name":"tail_nf_logs","arguments":{"nf":"amf","level":"info","lines":20}}'
+  ./mcp-curl tools/call '{"name":"tail_nf_logs","arguments":{"nf":["amf","ausf","udm"],"grep":"imsi-999700000000001","since":"15m"}}'
+  ./mcp-curl tools/call '{"name":"tail_nf_logs","arguments":{"nf":"all","level":"error","since":"1h"}}'
+
+  MCP_URL=http://192.168.64.19:8080/mcp ./mcp-curl tools/list
+EOF
+    exit 0
+}
+
+[[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && usage
+
 MCP_URL="${MCP_URL:-http://localhost:8080/mcp}"
 METHOD="${1:-tools/list}"
 _default_params='{}'
