@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# mcp-curl — send a single MCP JSON-RPC call over streamable-http
+#
+# Usage:
+#   ./mcp-curl tools/list
+#   ./mcp-curl tools/call '{"name":"nf_lifecycle","arguments":{"action":"status"}}'
+#   ./mcp-curl tools/call '{"name":"nf_lifecycle","arguments":{"action":"status","nf":["amf"]}}'
+#
+# Env:
+#   MCP_URL  — base URL of the MCP endpoint (default: http://localhost:8080/mcp)
+
+set -euo pipefail
+
+MCP_URL="${MCP_URL:-http://localhost:8080/mcp}"
+METHOD="${1:-tools/list}"
+_default_params='{}'
+PARAMS="${2:-$_default_params}"
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+post() {
+    local session="${1:-}" body="$2"
+    local hdrs=(-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
+    [[ -n $session ]] && hdrs+=(-H "Mcp-Session-Id: $session")
+    local tmp; tmp=$(mktemp)
+    printf '%s' "$body" > "$tmp"
+    curl -s "${hdrs[@]}" -X POST "$MCP_URL" --data-binary "@$tmp"
+    rm -f "$tmp"
+}
+
+# Extract the SSE data line from a response (strips "data: " prefix)
+sse_data() {
+    local tmp; tmp=$(mktemp)
+    cat > "$tmp"
+    local data; data=$(grep -o 'data:.*' "$tmp" | head -1 | sed 's/^data: //')
+    if [[ -z $data ]]; then
+        echo "ERROR: no SSE data in response:" >&2
+        cat "$tmp" >&2
+        rm -f "$tmp"
+        exit 1
+    fi
+    rm -f "$tmp"
+    printf '%s' "$data"
+}
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# ── handshake ──────────────────────────────────────────────────────────────────
+
+INIT_RESPONSE=$(curl -si \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -X POST "$MCP_URL" \
+    -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mcp-curl","version":"1"}}}')
+
+SESSION=$(echo "$INIT_RESPONSE" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
+[[ -n $SESSION ]] || die "No Mcp-Session-Id in response — is the server running at $MCP_URL?"
+
+# Send initialized notification (fire-and-forget, no response expected)
+post "$SESSION" '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' > /dev/null
+
+# ── actual call ────────────────────────────────────────────────────────────────
+
+BODY=$(printf '{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}' "$METHOD" "$PARAMS")
+HDRS=(-H "Content-Type: application/json"
+      -H "Accept: application/json, text/event-stream"
+      -H "Mcp-Session-Id: $SESSION")
+
+REQ_BODY=$(mktemp)
+printf '%s' "$BODY" > "$REQ_BODY"
+RESP_BODY=$(mktemp)
+HTTP_STATUS=$(curl -s -o "$RESP_BODY" -w "%{http_code}" \
+    "${HDRS[@]}" -X POST "$MCP_URL" --data-binary "@$REQ_BODY")
+rm -f "$REQ_BODY"
+
+if [[ $HTTP_STATUS != 200 ]]; then
+    echo "ERROR: HTTP $HTTP_STATUS from server:" >&2
+    cat "$RESP_BODY" >&2
+    rm -f "$RESP_BODY"
+    exit 1
+fi
+
+cat "$RESP_BODY" | sse_data | python3 -m json.tool
+rm -f "$RESP_BODY"
