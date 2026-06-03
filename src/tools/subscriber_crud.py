@@ -177,6 +177,8 @@ def subscriber_crud(
             }
 
         if operation == "create":
+            if col.find_one({"imsi": norm}, {"_id": 1}):
+                return {"ok": False, "error": f"Subscriber {norm} already exists. Use 'update' to modify it."}
             doc = _deep_merge(_DEFAULT, data or {})
             doc["imsi"] = norm
             col.insert_one(doc)
