@@ -15,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
 from tools.system_health_snapshot import system_health_snapshot as _health
 from tools.subscriber_crud import subscriber_crud as _subscriber_crud
+from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -110,6 +111,26 @@ async def subscriber_crud(
     delete; subscriber list + count for list.
     """
     return await asyncio.to_thread(_subscriber_crud, operation, imsi, data, limit)
+
+
+@mcp.tool()
+async def list_ue_sessions(
+    imsi_filter: str | None = None,
+    include_idle: bool = True,
+) -> dict:
+    """List all live UE registrations and their PDU sessions.
+
+    Queries the AMF (/ue-info) for registration context and the SMF (/pdu-info)
+    for PDU session detail (including assigned IPs), then joins by SUPI.
+
+    imsi_filter:  Optional IMSI prefix (digits or "imsi-<digits>") to narrow results.
+    include_idle: Set False to return only UEs with at least one active PDU session.
+
+    Returns ue_count, per-UE cm_state/ue_activity, and per-session detail:
+      psi, dnn, S-NSSAI, ipv4/ipv6, state, QoS flows, N3 GTP-U endpoints.
+    Also reports source reachability (sources.amf / sources.smf).
+    """
+    return await asyncio.to_thread(_list_ue_sessions, imsi_filter, include_idle)
 
 
 if __name__ == "__main__":
