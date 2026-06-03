@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# open5gs-mcp — manage the Open5GS MCP server
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+SERVER="${SCRIPT_DIR}/src/server.py"
+PIDFILE="${SCRIPT_DIR}/.mcp-server.pid"
+LOGFILE="${SCRIPT_DIR}/.mcp-server.log"
+
+DEFAULT_TRANSPORT="sse"
+DEFAULT_HOST="0.0.0.0"
+DEFAULT_PORT="8080"
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+get_pid() {
+    [[ -f $PIDFILE ]] || { echo ""; return; }
+    local pid; pid=$(cat "$PIDFILE")
+    [[ -d /proc/$pid ]] && echo "$pid" || { rm -f "$PIDFILE"; echo ""; }
+}
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# ── commands ───────────────────────────────────────────────────────────────────
+
+cmd_start() {
+    local transport="$DEFAULT_TRANSPORT" host="$DEFAULT_HOST" port="$DEFAULT_PORT"
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --transport|-t) transport="$2"; shift 2 ;;
+            --host)         host="$2";      shift 2 ;;
+            --port|-p)      port="$2";      shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    local pid; pid=$(get_pid)
+    [[ -n $pid ]] && { echo "Already running (pid $pid). Use 'restart' to restart."; exit 0; }
+
+    [[ -x $PYTHON ]] || die "Python not found at $PYTHON — activate venv or run from repo root"
+    [[ -f $SERVER ]] || die "Server not found: $SERVER"
+
+    nohup "$PYTHON" "$SERVER" \
+        --transport "$transport" \
+        --host "$host" \
+        --port "$port" \
+        >> "$LOGFILE" 2>&1 &
+    local bgpid=$!
+
+    # Wait for the port to open (up to 5 s)
+    local i=0
+    while (( i < 10 )); do
+        sleep 0.5; i=$((i+1))
+        if ss -tlnp "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
+            echo "$bgpid" > "$PIDFILE"
+            echo "Started (pid $bgpid) — ${transport} on ${host}:${port}"
+            echo "Log: $LOGFILE"
+            return 0
+        fi
+    done
+
+    echo "ERROR: server did not come up within 5 s — check $LOGFILE" >&2
+    kill "$bgpid" 2>/dev/null || true
+    exit 1
+}
+
+cmd_stop() {
+    local pid; pid=$(get_pid)
+    if [[ -z $pid ]]; then
+        echo "Not running."
+        return 0
+    fi
+    kill "$pid"
+    local i=0
+    while [[ -d /proc/$pid ]] && (( i < 20 )); do sleep 0.5; i=$((i+1)); done
+    if [[ -d /proc/$pid ]]; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PIDFILE"
+    echo "Stopped (was pid $pid)."
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 0.5
+    cmd_start "$@"
+}
+
+cmd_status() {
+    local pid; pid=$(get_pid)
+    if [[ -n $pid ]]; then
+        echo "Running (pid $pid)"
+        # Show which port it's on
+        local port; port=$(ss -tlnp 2>/dev/null | awk -v p="pid=$pid" '$0 ~ p {match($4, /:([0-9]+)$/, m); print m[1]; exit}')
+        [[ -n $port ]] && echo "Listening on port $port"
+    else
+        echo "Not running."
+    fi
+}
+
+cmd_logs() {
+    [[ -f $LOGFILE ]] || { echo "No log file yet."; exit 0; }
+    tail -f "$LOGFILE"
+}
+
+# ── usage ──────────────────────────────────────────────────────────────────────
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") <command> [options]
+
+Commands:
+  start     Start the MCP server in the background
+  stop      Stop the running server
+  restart   Stop then start
+  status    Show whether the server is running
+  logs      Tail the server log
+
+Start options:
+  --transport, -t  sse | streamable-http | stdio  (default: sse)
+  --host           Bind address                    (default: 0.0.0.0)
+  --port,     -p   Bind port                       (default: 8080)
+
+Examples:
+  $(basename "$0") start
+  $(basename "$0") start --transport streamable-http --port 9000
+  $(basename "$0") stop
+  $(basename "$0") status
+  $(basename "$0") logs
+EOF
+    exit 1
+}
+
+# ── main ───────────────────────────────────────────────────────────────────────
+
+[[ $# -lt 1 ]] && usage
+CMD=$1; shift
+case $CMD in
+    start)   cmd_start   "$@" ;;
+    stop)    cmd_stop        ;;
+    restart) cmd_restart "$@" ;;
+    status)  cmd_status      ;;
+    logs)    cmd_logs        ;;
+    *)       usage           ;;
+esac
