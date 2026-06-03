@@ -114,6 +114,35 @@ cmd_logs() {
     tail -f "$LOGFILE"
 }
 
+cmd_install() {
+    local svc="open5gs-mcp.service"
+    local src="${SCRIPT_DIR}/${svc}"
+    local dst="/etc/systemd/system/${svc}"
+
+    [[ -f $src ]] || die "Service file not found: $src"
+
+    echo "Installing ${svc} → ${dst}"
+    sudo cp "$src" "$dst"
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$svc"
+    echo "Enabled. Starting service..."
+    # Stop the manually-managed instance first if running
+    cmd_stop 2>/dev/null || true
+    sudo systemctl start "$svc"
+    sleep 2
+    sudo systemctl status "$svc" --no-pager -l | head -20
+}
+
+cmd_uninstall() {
+    local svc="open5gs-mcp.service"
+    echo "Stopping and disabling ${svc}..."
+    sudo systemctl stop    "$svc" 2>/dev/null || true
+    sudo systemctl disable "$svc" 2>/dev/null || true
+    sudo rm -f "/etc/systemd/system/${svc}"
+    sudo systemctl daemon-reload
+    echo "Uninstalled."
+}
+
 # ── usage ──────────────────────────────────────────────────────────────────────
 
 usage() {
@@ -121,23 +150,25 @@ usage() {
 Usage: $(basename "$0") <command> [options]
 
 Commands:
-  start     Start the MCP server in the background
-  stop      Stop the running server
-  restart   Stop then start
-  status    Show whether the server is running
-  logs      Tail the server log
+  start       Start the MCP server in the background
+  stop        Stop the running server
+  restart     Stop then start
+  status      Show whether the server is running
+  logs        Tail the server log
+  install     Install and enable as a systemd service (auto-start on boot)
+  uninstall   Remove the systemd service
 
 Start options:
-  --transport, -t  sse | streamable-http | stdio  (default: sse)
-  --host           Bind address                    (default: 0.0.0.0)
-  --port,     -p   Bind port                       (default: 8080)
+  --transport, -t  all | sse | streamable-http | stdio  (default: all)
+  --host           Bind address                          (default: 0.0.0.0)
+  --port,     -p   Bind port                             (default: 8080)
 
 Examples:
   $(basename "$0") start
-  $(basename "$0") start --transport streamable-http --port 9000
   $(basename "$0") stop
   $(basename "$0") status
   $(basename "$0") logs
+  $(basename "$0") install
 EOF
     exit 1
 }
@@ -147,10 +178,12 @@ EOF
 [[ $# -lt 1 ]] && usage
 CMD=$1; shift
 case $CMD in
-    start)   cmd_start   "$@" ;;
-    stop)    cmd_stop        ;;
-    restart) cmd_restart "$@" ;;
-    status)  cmd_status      ;;
-    logs)    cmd_logs        ;;
-    *)       usage           ;;
+    start)     cmd_start     "$@" ;;
+    stop)      cmd_stop          ;;
+    restart)   cmd_restart   "$@" ;;
+    status)    cmd_status        ;;
+    logs)      cmd_logs          ;;
+    install)   cmd_install       ;;
+    uninstall) cmd_uninstall     ;;
+    *)         usage             ;;
 esac
