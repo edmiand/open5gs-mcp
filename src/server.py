@@ -13,6 +13,7 @@ import mcp.server.sse as _mcp_sse
 from mcp.server.fastmcp import FastMCP
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
+from tools.system_health_snapshot import system_health_snapshot as _health
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -63,6 +64,26 @@ async def nf_lifecycle(
     UPF operations require sudo — the underlying script handles privilege escalation.
     """
     return await asyncio.to_thread(_nf_lifecycle, action, nf)
+
+
+@mcp.tool()
+async def system_health_snapshot(log_minutes: int = 15) -> dict:
+    """One-shot health check of the Open5GS 5G core.
+
+    Polls all NF processes, scans recent logs for errors, checks MongoDB
+    reachability, and verifies the ogstun TUN device. Call this first in any
+    diagnostic session — it lets an agent triage the entire system in one call
+    and decide which targeted tool to invoke next.
+
+    log_minutes: How many minutes back to scan logs for errors (default 15, max 1440).
+
+    Returns ok/timestamp plus:
+      nfs      — per-NF status (green/yellow/red), pid, up to 3 recent error lines
+      mongodb  — status + subscriber count
+      tun      — ogstun device status
+      summary  — overall health (healthy/degraded/critical) and counts
+    """
+    return await asyncio.to_thread(_health, log_minutes)
 
 
 if __name__ == "__main__":
