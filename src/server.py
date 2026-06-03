@@ -16,6 +16,7 @@ from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
 from tools.system_health_snapshot import system_health_snapshot as _health
 from tools.subscriber_crud import subscriber_crud as _subscriber_crud
 from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
+from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -131,6 +132,35 @@ async def list_ue_sessions(
     Also reports source reachability (sources.amf / sources.smf).
     """
     return await asyncio.to_thread(_list_ue_sessions, imsi_filter, include_idle)
+
+
+@mcp.tool()
+async def tail_nf_logs(
+    nf: str | list[str] = "all",
+    level: str = "info",
+    grep: str | None = None,
+    lines: int = 100,
+    since: str | None = None,
+) -> dict:
+    """Filtered log reads across one or more Open5GS NF log files.
+
+    Reads from each log file tail, filters, then interleaves results from all
+    requested NFs in chronological order — ideal for correlating events across
+    AMF + AUSF + UDM during a single registration or session failure.
+
+    nf:     NF name, list of names, or "all". Valid: amf smf upf ausf udm udr
+            pcf nssf bsf nrf scp webui
+    level:  Minimum severity: debug | info | warn | error
+    grep:   Optional keyword or Python regex (case-insensitive) applied to the
+            raw log line. E.g. "imsi-999700", "Registration", "5QI|NSSAI"
+    lines:  Max total lines to return across all NFs (default 100, max 500).
+    since:  Time window start. Relative ("15m", "2h") or ISO datetime.
+            Omit to read from the current tail without a time constraint.
+
+    Returns total_matched, per-line {nf, timestamp, component, level, message,
+    source}, per-NF line counts, and per-NF errors (e.g. UPF permission denied).
+    """
+    return await asyncio.to_thread(_tail_nf_logs, nf, level, grep, lines, since)
 
 
 if __name__ == "__main__":
