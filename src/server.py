@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
 from tools.system_health_snapshot import system_health_snapshot as _health
+from tools.subscriber_crud import subscriber_crud as _subscriber_crud
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -84,6 +85,31 @@ async def system_health_snapshot(log_minutes: int = 15) -> dict:
       summary  — overall health (healthy/degraded/critical) and counts
     """
     return await asyncio.to_thread(_health, log_minutes)
+
+
+@mcp.tool()
+async def subscriber_crud(
+    operation: Literal["create", "read", "update", "delete", "list"],
+    imsi: str | None = None,
+    data: dict | None = None,
+    limit: int = 100,
+) -> dict:
+    """Full CRUD against the Open5GS subscribers MongoDB collection.
+
+    operation: create | read | update | delete | list
+    imsi:  IMSI (10-15 digits) or SUPI ("imsi-<digits>").
+           Required for create / read / update / delete.
+    data:  Subscriber fields for create or update (deep-merged with defaults).
+           Minimum for create: {"security": {"k": "<Ki>", "opc": "<OPc>"}}
+           Any subset of: security, ambr, slice, msisdn, access_restriction_data.
+    limit: Max results for list (default 100, max 1000).
+
+    AMBR units: 0=bps 1=Kbps 2=Mbps 3=Gbps  |  Session type: 1=IPv4 2=IPv6 3=IPv4v6
+
+    Returns subscriber document for create/read/update; deletion status for
+    delete; subscriber list + count for list.
+    """
+    return await asyncio.to_thread(_subscriber_crud, operation, imsi, data, limit)
 
 
 if __name__ == "__main__":
