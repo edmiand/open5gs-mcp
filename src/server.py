@@ -18,7 +18,7 @@ from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
 # in the mcp.server.sse module so every SSE connection gets a 15 s keepalive.
 class _ESRWithPing(_ESR):
-    def __init__(self, *args, ping: int = 15, **kwargs):
+    def __init__(self, *args, ping: int = 10, **kwargs):
         super().__init__(*args, ping=ping, **kwargs)
 
 _mcp_sse.EventSourceResponse = _ESRWithPing

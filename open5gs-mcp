@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 SERVER="${SCRIPT_DIR}/src/server.py"
 PIDFILE="${SCRIPT_DIR}/.mcp-server.pid"
+STATEFILE="${SCRIPT_DIR}/.mcp-server.state"
 LOGFILE="${SCRIPT_DIR}/.mcp-server.log"
 
 DEFAULT_TRANSPORT="sse"
@@ -55,6 +56,7 @@ cmd_start() {
         sleep 0.5; i=$((i+1))
         if ss -tlnp "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
             echo "$bgpid" > "$PIDFILE"
+            printf 'transport=%s\nhost=%s\nport=%s\n' "$transport" "$host" "$port" > "$STATEFILE"
             echo "Started (pid $bgpid) — ${transport} on ${host}:${port}"
             echo "Log: $LOGFILE"
             return 0
@@ -78,7 +80,7 @@ cmd_stop() {
     if [[ -d /proc/$pid ]]; then
         kill -9 "$pid" 2>/dev/null || true
     fi
-    rm -f "$PIDFILE"
+    rm -f "$PIDFILE" "$STATEFILE"
     echo "Stopped (was pid $pid)."
 }
 
@@ -92,9 +94,16 @@ cmd_status() {
     local pid; pid=$(get_pid)
     if [[ -n $pid ]]; then
         echo "Running (pid $pid)"
-        # Show which port it's on
-        local port; port=$(ss -tlnp 2>/dev/null | awk -v p="pid=$pid" '$0 ~ p {match($4, /:([0-9]+)$/, m); print m[1]; exit}')
-        [[ -n $port ]] && echo "Listening on port $port"
+        if [[ -f $STATEFILE ]]; then
+            local transport host port
+            transport=$(grep '^transport=' "$STATEFILE" | cut -d= -f2)
+            host=$(grep '^host='      "$STATEFILE" | cut -d= -f2)
+            port=$(grep '^port='      "$STATEFILE" | cut -d= -f2)
+            echo "Transport: ${transport}  host: ${host}  port: ${port}"
+        else
+            local port; port=$(ss -tlnp 2>/dev/null | awk -v p="pid=$pid" '$0 ~ p {match($4, /:([0-9]+)$/, m); print m[1]; exit}')
+            [[ -n $port ]] && echo "Listening on port $port"
+        fi
     else
         echo "Not running."
     fi
