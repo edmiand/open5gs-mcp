@@ -9,8 +9,19 @@ from typing import Literal
 # Make `src/` importable regardless of invocation method
 sys.path.insert(0, str(Path(__file__).parent))
 
+import mcp.server.sse as _mcp_sse
 from mcp.server.fastmcp import FastMCP
+from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
+
+# FastMCP's SSE transport doesn't set a ping interval, so idle connections are
+# dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
+# in the mcp.server.sse module so every SSE connection gets a 15 s keepalive.
+class _ESRWithPing(_ESR):
+    def __init__(self, *args, ping: int = 15, **kwargs):
+        super().__init__(*args, ping=ping, **kwargs)
+
+_mcp_sse.EventSourceResponse = _ESRWithPing
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Open5GS MCP server")
