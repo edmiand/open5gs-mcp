@@ -30,10 +30,10 @@ ENV
   MCP_URL      MCP endpoint URL (default: http://localhost:8080/mcp)
 
 NOTES
-  Requires the server to be running with streamable-http transport:
-    ./open5gs-mcp restart --transport streamable-http
-  After testing, restore SSE for ollmcp:
-    ./open5gs-mcp restart
+  The server must be running (any transport). The default "all" transport
+  serves both SSE (/sse for ollmcp) and streamable-http (/mcp for mcp-curl)
+  on the same port — no restart needed.
+    ./open5gs-mcp start    # default: all transports on port 8080
 
 EXAMPLES
   ./mcp-curl tools/list

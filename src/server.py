@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 from typing import Literal
 
+import uvicorn
+from starlette.applications import Starlette
+
 # Make `src/` importable regardless of invocation method
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -31,12 +34,12 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Open5GS MCP server")
     p.add_argument(
         "--transport",
-        choices=["stdio", "streamable-http", "sse"],
-        default="stdio",
-        help="Transport to use (default: stdio)",
+        choices=["stdio", "streamable-http", "sse", "all"],
+        default="all",
+        help="Transport to use (default: all — serves SSE + streamable-http on the same port)",
     )
-    p.add_argument("--host", default="0.0.0.0", help="Bind host for HTTP transports (default: 0.0.0.0)")
-    p.add_argument("--port", type=int, default=8080, help="Bind port for HTTP transports (default: 8080)")
+    p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    p.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
     return p.parse_args()
 
 
@@ -167,4 +170,39 @@ if __name__ == "__main__":
     args = _parse_args()
     mcp.host = args.host
     mcp.port = args.port
-    mcp.run(transport=args.transport)
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+    elif args.transport == "all":
+        # Serve SSE (/sse, /messages) and streamable-http (/mcp) on one port
+        # so ollmcp and mcp-curl both work without switching transports.
+        # Each sub-app has its own lifespan; preserve both via a dispatcher.
+        _sse_app  = mcp.sse_app()
+        _http_app = mcp.streamable_http_app()
+
+        from contextlib import asynccontextmanager
+        from starlette.routing import Route, Router
+
+        @asynccontextmanager
+        async def _combined_lifespan(app):
+            async with _sse_app.router.lifespan_context(_sse_app):
+                async with _http_app.router.lifespan_context(_http_app):
+                    yield
+
+        # Route by path prefix: /mcp → streamable-http, everything else → SSE
+        async def _dispatch(scope, receive, send):
+            if scope["type"] == "lifespan":
+                await _combined_lifespan_app(scope, receive, send)
+                return
+            path = scope.get("path", "")
+            if path.startswith("/mcp"):
+                await _http_app(scope, receive, send)
+            else:
+                await _sse_app(scope, receive, send)
+
+        _combined_lifespan_app = Starlette(lifespan=_combined_lifespan)
+
+        uvicorn.run(_dispatch, host=args.host, port=args.port,
+                    log_level=mcp.settings.log_level.lower())
+    else:
+        mcp.run(transport=args.transport)
