@@ -91,9 +91,24 @@ cmd_restart() {
 }
 
 cmd_status() {
-    local pid; pid=$(get_pid)
+    local pid managed_by=""
+    pid=$(get_pid)
+
+    # No PIDFILE — check if running under systemd
+    if [[ -z $pid ]]; then
+        if systemctl is-active --quiet open5gs-mcp.service 2>/dev/null; then
+            pid=$(systemctl show open5gs-mcp.service --property=MainPID --value 2>/dev/null)
+            [[ "$pid" == "0" || -z $pid ]] && pid=""
+            [[ -n $pid ]] && managed_by="systemd"
+        fi
+    fi
+
     if [[ -n $pid ]]; then
-        echo "Running (pid $pid)"
+        if [[ -n $managed_by ]]; then
+            echo "Running via systemd (pid $pid)"
+        else
+            echo "Running (pid $pid)"
+        fi
         if [[ -f $STATEFILE ]]; then
             local transport host port
             transport=$(grep '^transport=' "$STATEFILE" | cut -d= -f2)
