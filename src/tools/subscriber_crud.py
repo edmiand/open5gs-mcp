@@ -13,6 +13,14 @@ _DB = "open5gs"
 _COL = "subscribers"
 _IMSI_RE = re.compile(r"^\d{10,15}$")
 
+# Top-level scalar fields safe to use as list filters (no operators, no JS)
+_SAFE_LIST_FILTER_KEYS = frozenset({
+    "subscriber_status",
+    "network_access_mode",
+    "access_restriction_data",
+    "operator_determined_barring",
+})
+
 # ── default subscriber document ────────────────────────────────────────────────
 # Matches the Mongoose schema defaults. Callers only need to supply
 # security.k and security.opc (and optionally slice/ambr overrides).
@@ -125,6 +133,7 @@ def subscriber_crud(
     imsi: str | None = None,
     data: dict | None = None,
     limit: int = 100,
+    filter: dict | None = None,
 ) -> dict:
     """
     Full CRUD against the Open5GS subscribers MongoDB collection.
@@ -139,8 +148,14 @@ def subscriber_crud(
                Accepts any subset of the subscriber schema (security, ambr,
                slice, msisdn, access_restriction_data, …).
                For update, only supplied keys are changed (deep-merge).
-        limit: Max documents returned by list (1–1000, default 100).
+        limit:  Max documents returned by list (1–1000, default 100).
+        filter: Optional equality filter for list, e.g. {"subscriber_status": 1}.
+                Allowed keys: subscriber_status, network_access_mode,
+                access_restriction_data, operator_determined_barring.
+                Only scalar (int/str/bool) values are accepted.
 
+    subscriber_status values:  0 = service_granted, 1 = operator_barring (cannot register)
+    network_access_mode values: 0 = packet_and_circuit, 1 = only_packet, 2 = only_circuit
     AMBR unit codes: 0 = bps, 1 = Kbps, 2 = Mbps, 3 = Gbps
     Session type:    1 = IPv4, 2 = IPv6, 3 = IPv4v6
 
@@ -170,7 +185,16 @@ def subscriber_crud(
         col = _col()
 
         if operation == "list":
-            docs = list(col.find({}, limit=limit).sort("imsi", ASCENDING))
+            mongo_filter: dict = {}
+            if filter:
+                bad_keys = [k for k in filter if k not in _SAFE_LIST_FILTER_KEYS]
+                if bad_keys:
+                    return {"ok": False, "error": f"Unsupported filter key(s): {bad_keys}. Allowed: {sorted(_SAFE_LIST_FILTER_KEYS)}"}
+                bad_vals = [k for k, v in filter.items() if not isinstance(v, (str, int, float, bool))]
+                if bad_vals:
+                    return {"ok": False, "error": f"Filter values must be scalar (str/int/bool), got non-scalar for: {bad_vals}"}
+                mongo_filter = dict(filter)
+            docs = list(col.find(mongo_filter, limit=limit).sort("imsi", ASCENDING))
             return {
                 "ok": True, "operation": "list",
                 "subscribers": [_redact(_serialize(d)) for d in docs],

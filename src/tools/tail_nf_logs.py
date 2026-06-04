@@ -116,14 +116,16 @@ def _read_nf_log(
     pattern: re.Pattern | None,
     since: datetime | None,
     max_lines: int,
-) -> tuple[list[dict], str | None]:
+) -> tuple[list[dict], datetime | None, str | None]:
     """
     Read and filter one NF's log file.
-    Returns (records, error_msg).  error_msg is None on success.
+    Returns (records, window_start, error_msg).
+    window_start is the earliest timestamp found in the 2MB window (before filtering),
+    used to detect truncation when a since= query predates the available window.
     """
     logfile = _LOG_DIR / f"{nf}.log"
     if not logfile.exists():
-        return [], "log file not found"
+        return [], None, "log file not found"
 
     try:
         with open(logfile, "rb") as fh:
@@ -132,18 +134,23 @@ def _read_nf_log(
             fh.seek(max(0, size - _TAIL_BYTES))
             raw_bytes = fh.read()
     except PermissionError:
-        return [], "permission denied (UPF log requires root)"
+        return [], None, "permission denied (UPF log requires root)"
     except OSError as exc:
-        return [], str(exc)
+        return [], None, str(exc)
 
     text = raw_bytes.decode("utf-8", errors="replace")
     year = datetime.now().year
     records: list[dict] = []
+    window_start: datetime | None = None
 
     for raw_line in text.splitlines():
         rec = _parse_line(raw_line, year)
         if rec is None:
             continue
+
+        # Track earliest timestamp in the raw window (before any filtering)
+        if window_start is None or rec["ts"] < window_start:
+            window_start = rec["ts"]
 
         # Time filter
         if since and rec["ts"] < since:
@@ -161,7 +168,7 @@ def _read_nf_log(
         records.append(rec)
 
     # Keep last max_lines per NF (before merge)
-    return records[-max_lines:], None
+    return records[-max_lines:], window_start, None
 
 
 # ── main ───────────────────────────────────────────────────────────────────────
@@ -255,15 +262,18 @@ def tail_nf_logs(
     all_records: list[dict] = []
     nf_counts: dict[str, int] = {}
     errors: dict[str, str] = {}
+    earliest_window: datetime | None = None
     # Per-NF limit: avoid one noisy NF drowning out others
     per_nf_limit = max(lines, 200)
 
     for n in nf_list:
-        recs, err = _read_nf_log(n, min_level, pattern, since_dt, per_nf_limit)
+        recs, window_start, err = _read_nf_log(n, min_level, pattern, since_dt, per_nf_limit)
         if err:
             errors[n] = err
         nf_counts[n] = len(recs)
         all_records.extend(recs)
+        if window_start and (earliest_window is None or window_start < earliest_window):
+            earliest_window = window_start
 
     # ── sort by timestamp and cap ────────────────────────────────────────────
 
@@ -284,7 +294,14 @@ def tail_nf_logs(
             "source":    r["source"],
         })
 
-    return {
+    # Detect truncation: since= requested data older than our 2MB window covers
+    truncated = (
+        since_dt is not None
+        and earliest_window is not None
+        and since_dt < earliest_window
+    )
+
+    result: dict = {
         "ok": True,
         "query": {
             "nf":    nf_list,
@@ -296,5 +313,10 @@ def tail_nf_logs(
         "total_matched": total_matched,
         "lines": output,
         "nf_counts": nf_counts,
-        **({"errors": errors} if errors else {}),
     }
+    if truncated:
+        result["truncated"] = True
+        result["earliest_available"] = earliest_window.strftime("%m/%d %H:%M:%S")
+    if errors:
+        result["errors"] = errors
+    return result

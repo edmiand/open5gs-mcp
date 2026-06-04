@@ -20,6 +20,7 @@ from tools.system_health_snapshot import system_health_snapshot as _health
 from tools.subscriber_crud import subscriber_crud as _subscriber_crud
 from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
 from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
+from tools.read_nf_config import read_nf_config as _read_nf_config
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -98,6 +99,7 @@ async def subscriber_crud(
     imsi: str | None = None,
     data: dict | None = None,
     limit: int = 100,
+    filter: dict | None = None,
 ) -> dict:
     """Full CRUD against the Open5GS subscribers MongoDB collection.
 
@@ -108,13 +110,18 @@ async def subscriber_crud(
            Minimum for create: {"security": {"k": "<Ki>", "opc": "<OPc>"}}
            Any subset of: security, ambr, slice, msisdn, access_restriction_data.
     limit: Max results for list (default 100, max 1000).
+    filter: Equality filter for list, e.g. {"subscriber_status": 1} to find
+            barred subscribers. Allowed keys: subscriber_status,
+            network_access_mode, access_restriction_data,
+            operator_determined_barring.
 
+    subscriber_status: 0=service_granted, 1=operator_barring (cannot register)
     AMBR units: 0=bps 1=Kbps 2=Mbps 3=Gbps  |  Session type: 1=IPv4 2=IPv6 3=IPv4v6
 
     Returns subscriber document for create/read/update; deletion status for
     delete; subscriber list + count for list.
     """
-    return await asyncio.to_thread(_subscriber_crud, operation, imsi, data, limit)
+    return await asyncio.to_thread(_subscriber_crud, operation, imsi, data, limit, filter)
 
 
 @mcp.tool()
@@ -164,6 +171,33 @@ async def tail_nf_logs(
     source}, per-NF line counts, and per-NF errors (e.g. UPF permission denied).
     """
     return await asyncio.to_thread(_tail_nf_logs, nf, level, grep, lines, since)
+
+
+@mcp.tool()
+async def read_nf_config(nf: str, path: str | None = None) -> dict:
+    """Read the YAML configuration for any Open5GS network function.
+
+    Parses install/etc/open5gs/<nf>.yaml and returns the full config tree,
+    or a specific subtree when path is supplied. Use this to inspect why two
+    NFs can't communicate (mismatched SBI addresses, wrong NRF/SCP URI),
+    verify slice or subnet configuration, or check interface bindings — all
+    without opening files manually. Also a prerequisite before patch_nf_config.
+
+    nf:   NF name. Valid: amf smf upf ausf udm udr pcf nssf bsf nrf scp
+    path: Optional dot-separated path into the config tree.
+          Examples:
+            "amf.sbi"                → SBI server/client addresses
+            "amf.sbi.client.scp"     → SCP URI the AMF is pointing at
+            "smf.pfcp.client.upf"    → UPF address SMF sends PFCP to
+            "smf.session"            → UE IP subnet pool
+            "amf.guami"              → PLMN + AMF ID
+            "amf.plmn_support"       → supported PLMNs and slices
+            "logger"                 → log file path and level
+          List items can be indexed numerically: "amf.sbi.server.0"
+
+    Returns ok, nf, config_file path, path echoed, and config subtree.
+    """
+    return await asyncio.to_thread(_read_nf_config, nf, path)
 
 
 if __name__ == "__main__":

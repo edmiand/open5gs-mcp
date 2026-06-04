@@ -5,6 +5,9 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
+import yaml
+
 from tools.nf_lifecycle import _SCRIPT
 
 # ── paths ──────────────────────────────────────────────────────────────────────
@@ -12,6 +15,13 @@ from tools.nf_lifecycle import _SCRIPT
 _INSTALL = _SCRIPT.parent / "install"
 _LOG_DIR = _INSTALL / "var" / "log" / "open5gs"
 _RUN_DIR = _INSTALL / "var" / "run" / "open5gs"
+_CONFIG_DIR = _INSTALL / "etc" / "open5gs"
+
+# NFs that expose subscriber-relevant HTTP info endpoints
+_NF_INFO_ENDPOINTS: dict[str, str] = {
+    "amf": "/ue-info",
+    "smf": "/pdu-info",
+}
 
 # Startup dependency order (matches open5gs-ctl.sh)
 _NFS = ["nrf", "scp", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "webui"]
@@ -149,6 +159,33 @@ def _check_tun(device: str = "ogstun") -> dict:
         return {"status": "unknown", "device": device, "error": str(exc)}
 
 
+# ── NF info endpoint probes ────────────────────────────────────────────────────
+
+def _metrics_url(nf: str) -> str:
+    try:
+        cfg_path = _CONFIG_DIR / f"{nf}.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        srv = cfg[nf]["metrics"]["server"][0]
+        return f"http://{srv['address']}:{srv['port']}"
+    except Exception:
+        defaults = {"amf": "http://127.0.0.5:9090", "smf": "http://127.0.0.4:9090"}
+        return defaults.get(nf, "http://127.0.0.1:9090")
+
+
+def _probe_nf_endpoint(nf: str) -> str:
+    """Return 'ok' if the NF info endpoint responds, 'unreachable' otherwise."""
+    path = _NF_INFO_ENDPOINTS.get(nf)
+    if not path:
+        return "n/a"
+    url = _metrics_url(nf) + path
+    try:
+        r = httpx.get(url, timeout=2.0)
+        return "ok" if r.status_code < 500 else "error"
+    except Exception:
+        return "unreachable"
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def system_health_snapshot(log_minutes: int = 15) -> dict:
@@ -171,7 +208,8 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
             "<name>": {
               "status": "green" | "yellow" | "red",
               "pid": int | None,
-              "recent_errors": [str]          # up to 3 stripped log lines
+              "recent_errors": [str],         # up to 3 stripped log lines
+              "endpoint": "ok"|"unreachable"|"error"  # amf/smf only; absent for other NFs
             }
           },
           "mongodb": {"status": "ok"|"down", "subscribers": int, ...},
@@ -196,15 +234,19 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
     for nf in _NFS:
         pid = _get_nf_pid(nf)
         recent_errors = _scan_log(nf, log_minutes) if pid else []
+        endpoint = _probe_nf_endpoint(nf) if pid else None
 
         if pid is None:
             status, red = "red", red + 1
-        elif recent_errors:
+        elif recent_errors or endpoint == "unreachable":
             status, yellow = "yellow", yellow + 1
         else:
             status, green = "green", green + 1
 
-        nfs_result[nf] = {"status": status, "pid": pid, "recent_errors": recent_errors}
+        nf_entry: dict = {"status": status, "pid": pid, "recent_errors": recent_errors}
+        if endpoint is not None and endpoint != "n/a":
+            nf_entry["endpoint"] = endpoint
+        nfs_result[nf] = nf_entry
 
     mongodb = _check_mongodb()
     tun = _check_tun()

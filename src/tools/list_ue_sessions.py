@@ -166,9 +166,12 @@ def list_ue_sessions(
                 }
               ],
               "pdu_session_count": int,
+              "requested_slices": [{"sst": int, "sd": str}],
               "allowed_slices": [{"sst": int, "sd": str}],
               "location": {"nr_tai": {...}, "nr_cgi": {...}},
-              "ambr_bps": {"downlink": int, "uplink": int}
+              "ambr_bps": {"downlink": int, "uplink": int},
+              "guti": str | None,                           # optional, present when M-TMSI assigned
+              "security_context": {"valid": int, "enc": str, "int": str} | None
             }
           ],
           "sources": {"amf": "ok"|"unreachable"|"timeout"|"error", "smf": str}
@@ -209,17 +212,23 @@ def list_ue_sessions(
             if not any(s["state"] == "active" for s in pdu_sessions):
                 continue
 
-        ues.append({
+        ue: dict = {
             "supi": supi,
             "imsi": imsi,
             "cm_state": amf_ue.get("cm_state", "unknown"),
             "ue_activity": ue_activity,
             "pdu_sessions": pdu_sessions,
             "pdu_session_count": len(pdu_sessions),
+            "requested_slices": amf_ue.get("requested_slices", []),
             "allowed_slices": amf_ue.get("allowed_slices", []),
             "location": amf_ue.get("location"),
             "ambr_bps": amf_ue.get("ambr"),
-        })
+        }
+        if amf_ue.get("guti"):
+            ue["guti"] = amf_ue["guti"]
+        if amf_ue.get("security"):
+            ue["security_context"] = amf_ue["security"]
+        ues.append(ue)
 
     return {
         "ok": True,
