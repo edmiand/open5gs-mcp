@@ -170,10 +170,11 @@ def subscriber_crud(
         col = _col()
 
         if operation == "list":
-            docs = list(col.find({}, limit=limit).sort("imsi", ASCENDING))
+            projection = {"_id": 0, "imsi": 1, "msisdn": 1, "imeisv": 1}
+            docs = list(col.find({}, projection, limit=limit).sort("imsi", ASCENDING))
             return {
                 "ok": True, "operation": "list",
-                "subscribers": [_redact_keys(_serialize(d)) for d in docs],
+                "subscribers": [_serialize(d) for d in docs],
                 "count": len(docs),
             }
 
