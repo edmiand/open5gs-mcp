@@ -92,6 +92,21 @@ def _serialize(doc: Any) -> Any:
     return doc
 
 
+def _redact(doc: Any) -> Any:
+    """Redact security.k and security.opc before returning to callers."""
+    if not isinstance(doc, dict):
+        return doc
+    result = dict(doc)
+    if "security" in result and isinstance(result["security"], dict):
+        sec = dict(result["security"])
+        if "k" in sec:
+            sec["k"] = "***"
+        if "opc" in sec:
+            sec["opc"] = "***"
+        result["security"] = sec
+    return result
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Merge override into a deep copy of base; override wins on scalar conflicts."""
     result = copy.deepcopy(base)
@@ -158,7 +173,7 @@ def subscriber_crud(
             docs = list(col.find({}, limit=limit).sort("imsi", ASCENDING))
             return {
                 "ok": True, "operation": "list",
-                "subscribers": [_serialize(d) for d in docs],
+                "subscribers": [_redact(_serialize(d)) for d in docs],
                 "count": len(docs),
             }
 
@@ -166,7 +181,7 @@ def subscriber_crud(
             doc = col.find_one({"imsi": norm})
             if doc is None:
                 return {"ok": False, "error": f"Subscriber {norm} not found"}
-            return {"ok": True, "operation": "read", "subscriber": _serialize(doc)}
+            return {"ok": True, "operation": "read", "subscriber": _redact(_serialize(doc))}
 
         if operation == "delete":
             result = col.delete_one({"imsi": norm})
@@ -182,7 +197,7 @@ def subscriber_crud(
             doc = _deep_merge(_DEFAULT, data or {})
             doc["imsi"] = norm
             col.insert_one(doc)
-            return {"ok": True, "operation": "create", "subscriber": _serialize(doc)}
+            return {"ok": True, "operation": "create", "subscriber": _redact(_serialize(doc))}
 
         if operation == "update":
             existing = col.find_one({"imsi": norm})
@@ -192,7 +207,7 @@ def subscriber_crud(
             merged.pop("_id", None)
             col.replace_one({"imsi": norm}, merged)
             updated = col.find_one({"imsi": norm})
-            return {"ok": True, "operation": "update", "subscriber": _serialize(updated)}
+            return {"ok": True, "operation": "update", "subscriber": _redact(_serialize(updated))}
 
     except DuplicateKeyError:
         return {"ok": False, "error": f"Subscriber {norm} already exists"}
