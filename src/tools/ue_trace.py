@@ -21,6 +21,8 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _SOURCE_RE = re.compile(r"\(([^)]+:\d+)\)$")
 
 _TAIL_BYTES = 2 * 1024 * 1024  # 2 MB
+_MAX_EVENTS = 200   # cap to keep LLM context manageable
+_MSG_MAX = 120      # truncate per-event message text
 
 _SEID_RE = re.compile(r"seid[:\s]+(?:0x)?([0-9a-fA-F]+)", re.I)
 _UE_IP_RE = re.compile(
@@ -377,25 +379,22 @@ def get_ue_trace(
 
     # ── Step 4: build structured events ───────────────────────────────────────
     all_events: list[dict] = []
-    raw_log_lines: dict[str, list[str]] = {}
 
     for nf, data in nf_data.items():
-        lines = data.get("lines", [])
-        raw_log_lines[nf] = [ln["raw"] for ln in lines]
-        for line_data in lines:
+        for line_data in data.get("lines", []):
             direction, from_e, to_e, msg_type = _infer_event(nf, line_data["message"])
+            msg = line_data["message"]
             all_events.append({
-                "timestamp": line_data["ts"].isoformat(),
+                "ts": line_data["ts_str"],
                 "nf": nf,
                 "level": line_data["level"],
-                "direction": direction,
                 "message_type": msg_type,
                 "from": from_e,
                 "to": to_e,
-                "raw": line_data["raw"],
+                "message": msg if len(msg) <= _MSG_MAX else msg[:_MSG_MAX] + "…",
             })
 
-    all_events.sort(key=lambda e: e["timestamp"])
+    all_events.sort(key=lambda e: e["ts"])
 
     # ── Step 5: build summary and output ──────────────────────────────────────
     registration_success = any(
@@ -409,9 +408,14 @@ def get_ue_trace(
     ue_ip_assigned = ue_ips[0] if ue_ips else None
 
     error_lines = [
-        e["raw"] for e in all_events
+        e["message"] for e in all_events
         if e["level"] in ("ERROR", "CRIT", "FATAL", "WARNING", "WARN")
     ]
+
+    total_events = len(all_events)
+    if total_events > _MAX_EVENTS:
+        keep = _MAX_EVENTS // 2
+        all_events = all_events[:keep] + all_events[total_events - keep:]
 
     # Participants in order of first appearance, filtered to known set
     seen: list[str] = []
@@ -436,11 +440,16 @@ def get_ue_trace(
             "pdu_session_success": pdu_session_success,
             "ue_ip_assigned": ue_ip_assigned,
             "errors": error_lines[:20],
+            "total_events": total_events,
         },
         "events": all_events,
-        "raw_log_lines": raw_log_lines,
         "mermaid_hint": mermaid_hint,
     }
+    if total_events > _MAX_EVENTS:
+        result["events_truncated"] = (
+            f"Showing first {_MAX_EVENTS // 2} and last {_MAX_EVENTS // 2} "
+            f"of {total_events} events"
+        )
 
     if nf_errors:
         result["nf_errors"] = nf_errors
