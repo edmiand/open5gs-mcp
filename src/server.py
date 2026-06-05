@@ -224,7 +224,7 @@ async def get_ue_trace(
     Returns:
       ok, supi, time_range, summary (registration_success, pdu_session_success,
       ue_ip_assigned, errors), events (sorted list of structured log events with
-      timestamp/nf/level/direction/message_type/from/to/raw), raw_log_lines per NF,
+      timestamp/nf/level/direction/message_type/from/to/message),
       mermaid_hint (sequenceDiagram participant block), and nf_errors if any NF
       log was unreadable.
     """
