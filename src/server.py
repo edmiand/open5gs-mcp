@@ -21,6 +21,7 @@ from tools.subscriber_crud import subscriber_crud as _subscriber_crud
 from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
 from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
 from tools.read_nf_config import read_nf_config as _read_nf_config
+from tools.ue_trace import get_ue_trace as _get_ue_trace
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -198,6 +199,36 @@ async def read_nf_config(nf: str, path: str | None = None) -> dict:
     Returns ok, nf, config_file path, path echoed, and config subtree.
     """
     return await asyncio.to_thread(_read_nf_config, nf, path)
+
+
+@mcp.tool()
+async def get_ue_trace(
+    supi: str,
+    time_window_minutes: int = 60,
+    include_nfs: list[str] | None = None,
+) -> dict:
+    """Collect full e2e trace for a UE identified by IMSI/SUPI across all Open5GS NFs.
+
+    Searches AMF first to anchor the time window, then correlates logs from AUSF,
+    UDM, UDR, SMF (PFCP SEIDs + UE IP), UPF, PCF, and NRF. Returns structured
+    events suitable for reconstructing a Mermaid sequence diagram of the call flow.
+
+    supi:                IMSI/SUPI string. Accepted formats:
+                           "imsi-999700000000001"  (SUPI canonical form)
+                           "999700000000001"       (bare digits)
+                           "IMSI:999700000000001"  (colon-separated)
+    time_window_minutes: How far back to search the AMF log (default 60, max 1440).
+    include_nfs:         Subset of NFs to search. Defaults to all:
+                           ["amf","ausf","udm","udr","smf","pcf","nrf","upf"]
+
+    Returns:
+      ok, supi, time_range, summary (registration_success, pdu_session_success,
+      ue_ip_assigned, errors), events (sorted list of structured log events with
+      timestamp/nf/level/direction/message_type/from/to/raw), raw_log_lines per NF,
+      mermaid_hint (sequenceDiagram participant block), and nf_errors if any NF
+      log was unreadable.
+    """
+    return await asyncio.to_thread(_get_ue_trace, supi, time_window_minutes, include_nfs)
 
 
 if __name__ == "__main__":
