@@ -24,15 +24,26 @@ amf, smf, upf, ausf, udm, udr, pcf, nssf, bsf, nrf, scp, webui
 All NFs expose metrics at http://localhost:9090/metrics
 NRF SBI: http://localhost:7777
 
-## The 12 MCP tools to build (in order)
+## AMF SBI / OAM API
+- AMF SBI address: 127.0.0.5:7777 (reads from amf.yaml at runtime)
+- AMF OAM endpoint: http://127.0.0.5:7777/namf-oam/v1/
+- AMF speaks HTTP/2 prior knowledge (h2c) — no upgrade negotiation
+- Always use `curl --http2-prior-knowledge`; httpx/httpcore will fail with HTTP/1.1
+
+## MCP tools — built
 1.  nf_lifecycle          — start/stop/restart/status any NF
 2.  system_health_snapshot — full health check in one call
 3.  subscriber_crud        — CRUD against subscribers collection
-4.  subscriber_auth_reset  — update K/OPc/SQN for a SUPI
-5.  list_ue_sessions       — active UE contexts and PDU sessions
+5.  list_ue_sessions       — active UE contexts and PDU sessions (AMF+SMF join)
 6.  read_nf_config         — read any NF YAML config
-7.  patch_nf_config        — patch key paths in any NF YAML config
 8.  tail_nf_logs           — filtered log reads across NFs
+    get_ue_trace           — e2e UE call flow reconstruction across all NFs
+    amf_ran_query          — connected gNBs, registered UEs, PLMN/slice config (OAM API)
+    amf_plmn_manage        — add/delete PLMNs live; triggers NGAP AMFConfigurationUpdate
+
+## MCP tools — not yet built
+4.  subscriber_auth_reset  — update K/OPc/SQN for a SUPI
+7.  patch_nf_config        — patch key paths in any NF YAML config
 9.  query_nf_metrics       — scrape Prometheus metrics from any NF
 10. network_infra_check    — check/setup TUN devices
 11. generate_credentials   — run cert/key generation scripts
