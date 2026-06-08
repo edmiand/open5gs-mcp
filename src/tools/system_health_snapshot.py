@@ -238,7 +238,7 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
 
         if pid is None:
             status, red = "red", red + 1
-        elif recent_errors or endpoint == "unreachable":
+        elif recent_errors or endpoint in ("unreachable", "error"):
             status, yellow = "yellow", yellow + 1
         else:
             status, green = "green", green + 1

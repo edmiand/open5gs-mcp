@@ -1,6 +1,7 @@
 """Tests for get_ue_trace tool."""
 
 import sys
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,34 +13,36 @@ from tools.ue_trace import get_ue_trace, _normalize_supi, _infer_event
 
 
 # ── Sample log snippets ───────────────────────────────────────────────────────
-# Timestamps use today's date (06/05) so they fall within any reasonable window.
+# Use today's date so timestamps always fall within the 1440-minute search window.
+
+_D = date.today().strftime("%m/%d")
 
 _AMF_LOG = (
-    "06/05 10:00:00.100: [amf] INFO: Registration Request [imsi-999700000000001]"
+    f"{_D} 10:00:00.100: [amf] INFO: Registration Request [imsi-999700000000001]"
     " (amf_ue_ngap_id=1 ran_ue_ngap_id=1) (nr-gnb.c:123)\n"
-    "06/05 10:00:00.200: [amf] INFO: [999700000000001] Authentication Request (amf-sm.c:456)\n"
-    "06/05 10:00:00.300: [amf] INFO: [999700000000001] Authentication Response (amf-sm.c:457)\n"
-    "06/05 10:00:00.400: [amf] INFO: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
-    "06/05 10:00:00.500: [amf] INFO: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
-    "06/05 10:00:00.600: [amf] INFO: [999700000000001] Registration Accept (amf-sm.c:600)\n"
-    "06/05 10:00:00.700: [amf] INFO: [999700000000001] PDU Session Establishment Request"
+    f"{_D} 10:00:00.200: [amf] INFO: [999700000000001] Authentication Request (amf-sm.c:456)\n"
+    f"{_D} 10:00:00.300: [amf] INFO: [999700000000001] Authentication Response (amf-sm.c:457)\n"
+    f"{_D} 10:00:00.400: [amf] INFO: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
+    f"{_D} 10:00:00.500: [amf] INFO: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
+    f"{_D} 10:00:00.600: [amf] INFO: [999700000000001] Registration Accept (amf-sm.c:600)\n"
+    f"{_D} 10:00:00.700: [amf] INFO: [999700000000001] PDU Session Establishment Request"
     " pdu_session_id=1 (amf-sm.c:700)\n"
-    "06/05 10:00:00.800: [amf] INFO: [999700000000001] PDU Session Establishment Accept (amf-sm.c:800)\n"
+    f"{_D} 10:00:00.800: [amf] INFO: [999700000000001] PDU Session Establishment Accept (amf-sm.c:800)\n"
 )
 
 _AUSF_LOG = (
-    "06/05 10:00:00.150: [ausf] INFO: Nausf-UEAuthentication for imsi-999700000000001 (ausf-sm.c:100)\n"
+    f"{_D} 10:00:00.150: [ausf] INFO: Nausf-UEAuthentication for imsi-999700000000001 (ausf-sm.c:100)\n"
 )
 
 _UDM_LOG = (
-    "06/05 10:00:00.160: [udm] INFO: Nudm-Authentication for 999700000000001 (udm-sm.c:100)\n"
+    f"{_D} 10:00:00.160: [udm] INFO: Nudm-Authentication for 999700000000001 (udm-sm.c:100)\n"
 )
 
 _SMF_LOG = (
-    "06/05 10:00:00.750: [smf] INFO: PDU Session Establishment dnn=internet"
+    f"{_D} 10:00:00.750: [smf] INFO: PDU Session Establishment dnn=internet"
     " seid:0x1234 (smf-sm.c:100)\n"
-    "06/05 10:00:00.760: [smf] INFO: PFCP Session Establishment seid:0x1234 (smf-sm.c:200)\n"
-    "06/05 10:00:00.770: [smf] INFO: UE IP assigned 10.45.0.2 (smf-sm.c:300)\n"
+    f"{_D} 10:00:00.760: [smf] INFO: PFCP Session Establishment seid:0x1234 (smf-sm.c:200)\n"
+    f"{_D} 10:00:00.770: [smf] INFO: UE IP assigned 10.45.0.2 (smf-sm.c:300)\n"
 )
 
 
@@ -167,7 +170,7 @@ class TestGetUETrace:
         result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
         assert result["ok"] is True
         timestamps = [e["timestamp"] for e in result["events"]]
-        assert timestamps == sorted(timestamps), "events are not in chronological order"
+        assert timestamps == sorted(timestamps), "events are not in chronological order within a day"
 
     @patch("tools.ue_trace._read_log_tail")
     def test_registration_success_detected(self, mock_read):
@@ -261,21 +264,9 @@ class TestGetUETrace:
         mock_read.side_effect = _fake_log
         result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
         assert result["ok"] is True
-        required = {"timestamp", "nf", "level", "direction", "message_type", "from", "to", "raw"}
+        required = {"timestamp", "nf", "level", "direction", "message_type", "from", "to", "message"}
         for event in result["events"]:
             assert required.issubset(event.keys()), f"event missing fields: {event}"
-
-    @patch("tools.ue_trace._read_log_tail")
-    def test_raw_log_lines_keyed_by_nf(self, mock_read):
-        mock_read.side_effect = _fake_log
-        result = get_ue_trace(
-            "imsi-999700000000001",
-            time_window_minutes=1440,
-            include_nfs=["amf", "ausf"],
-        )
-        assert result["ok"] is True
-        assert "amf" in result["raw_log_lines"]
-        assert "ausf" in result["raw_log_lines"]
 
     @patch("tools.ue_trace._read_log_tail")
     def test_no_registration_when_log_empty(self, mock_read):

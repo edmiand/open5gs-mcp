@@ -72,8 +72,7 @@ def _parse_ts(ts_str: str, year: int) -> datetime | None:
         except ValueError:
             return None
     # Handle year-rollover (log in Dec read in Jan)
-    now = datetime.now()
-    if dt.month > now.month and (dt.month - now.month) > 6:
+    if dt > datetime.now():
         dt = dt.replace(year=year - 1)
     return dt.replace(tzinfo=timezone.utc)
 

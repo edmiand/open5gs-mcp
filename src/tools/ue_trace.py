@@ -108,8 +108,7 @@ def _parse_ts_str(ts_str: str, year: int) -> datetime | None:
             dt = datetime.strptime(f"{year}/{ts_str}", "%Y/%m/%d %H:%M:%S")
         except ValueError:
             return None
-    now = datetime.now()
-    if dt.month > now.month and (dt.month - now.month) > 6:
+    if dt > datetime.now():
         dt = dt.replace(year=year - 1)
     return dt.replace(tzinfo=timezone.utc)
 
@@ -370,9 +369,12 @@ def get_ue_trace(
             smf_seids = data.get("seids", [])
 
     if "upf" in nfs_to_search:
-        upf_data = _search_nf_by_time(
-            "upf", search_start, search_end, seids=smf_seids or None
-        )
+        if smf_seids:
+            upf_data = _search_nf_by_time("upf", search_start, search_end, seids=smf_seids)
+        else:
+            # No PFCP SEIDs available — searching UPF without them returns all
+            # traffic in the window, unrelated to this UE.
+            upf_data = {"lines": [], "seids": [], "ue_ips": [], "dnns": [], "error": None}
         nf_data["upf"] = upf_data
         if upf_data["error"]:
             nf_errors["upf"] = upf_data["error"]
@@ -385,16 +387,18 @@ def get_ue_trace(
             direction, from_e, to_e, msg_type = _infer_event(nf, line_data["message"])
             msg = line_data["message"]
             all_events.append({
-                "ts": line_data["ts_str"],
+                "_sort_ts": line_data["ts"],   # datetime — removed after sort
+                "timestamp": line_data["ts_str"],
                 "nf": nf,
                 "level": line_data["level"],
+                "direction": direction,
                 "message_type": msg_type,
                 "from": from_e,
                 "to": to_e,
                 "message": msg if len(msg) <= _MSG_MAX else msg[:_MSG_MAX] + "…",
             })
 
-    all_events.sort(key=lambda e: e["ts"])
+    all_events.sort(key=lambda e: e["_sort_ts"])
 
     # ── Step 5: build summary and output ──────────────────────────────────────
     registration_success = any(
@@ -416,6 +420,9 @@ def get_ue_trace(
     if total_events > _MAX_EVENTS:
         keep = _MAX_EVENTS // 2
         all_events = all_events[:keep] + all_events[total_events - keep:]
+
+    for e in all_events:
+        del e["_sort_ts"]
 
     # Participants in order of first appearance, filtered to known set
     seen: list[str] = []
