@@ -23,7 +23,6 @@ from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
 from tools.read_nf_config import read_nf_config as _read_nf_config
 from tools.ue_trace import get_ue_trace as _get_ue_trace
 from tools.amf_ran_query import amf_ran_query as _amf_ran_query
-from tools.amf_plmn_manage import amf_plmn_manage as _amf_plmn_manage
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -247,30 +246,6 @@ async def amf_ran_query() -> dict:
     """
     return await asyncio.to_thread(_amf_ran_query)
 
-
-@mcp.tool()
-async def amf_plmn_manage(
-    action: Literal["add", "delete"],
-    mcc: str,
-    mnc: str,
-    s_nssai: list[dict] | None = None,
-) -> dict:
-    """Add or remove a PLMN from the live AMF configuration.
-
-    Changes take effect immediately — the AMF sends an AMFConfigurationUpdate
-    over NGAP to all connected gNBs. On delete, all UEs on that PLMN are
-    released (PDU sessions torn down, RAN context freed).
-
-    action:  "add" to add a new PLMN+slice, "delete" to remove an existing one.
-    mcc:     Mobile Country Code string, e.g. "999".
-    mnc:     Mobile Network Code string, e.g. "70" or "001".
-    s_nssai: Required for add. List of slice dicts with "sst" (int) and
-             optional "sd" (hex string, e.g. "000001").
-             Example: [{"sst": 1, "sd": "000001"}, {"sst": 2}]
-
-    Returns ok, action, plmn_id, and message.
-    """
-    return await asyncio.to_thread(_amf_plmn_manage, action, mcc, mnc, s_nssai)
 
 
 if __name__ == "__main__":

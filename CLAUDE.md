@@ -39,7 +39,6 @@ NRF SBI: http://localhost:7777
 8.  tail_nf_logs           — filtered log reads across NFs
     get_ue_trace           — e2e UE call flow reconstruction across all NFs
     amf_ran_query          — connected gNBs, registered UEs, PLMN/slice config (OAM API)
-    amf_plmn_manage        — add/delete PLMNs live; triggers NGAP AMFConfigurationUpdate
 
 ## MCP tools — not yet built
 4.  subscriber_auth_reset  — update K/OPc/SQN for a SUPI
