@@ -234,15 +234,17 @@ async def get_ue_trace(
 
 @mcp.tool()
 async def amf_ran_query() -> dict:
-    """Query live RAN state from the AMF OAM API.
+    """Query live RAN state from the AMF OAM API and metrics endpoint.
 
-    Returns the number of connected gNBs, registered UEs, and the list of
-    configured PLMNs with their S-NSSAI slices. Use this to quickly check
-    whether any gNBs are attached before troubleshooting registration failures,
-    or to confirm the PLMN/slice configuration the AMF is advertising.
+    Calls /namf-oam/v1/plmns for aggregate counts and PLMN/slice config, then
+    /gnb-info for per-gNB detail. Use this to check whether gNBs are attached,
+    inspect their TA/slice config, and count UEs per gNB before troubleshooting
+    registration failures.
 
-    Returns ok, connected_gnbs, registered_ues, total_plmns, and plmns list
-    (each entry: plmn_id, mcc, mnc, s_nssai[]).
+    Returns ok, connected_gnbs, registered_ues, total_plmns, plmns list
+    (each entry: plmn_id, mcc, mnc, s_nssai[]), gnbs list (each entry:
+    gnb_id, plmn, sctp_peer, supported_ta_list, num_connected_ues), and
+    gnbs_status ("ok"|"unreachable"|"timeout"|"error").
     """
     return await asyncio.to_thread(_amf_ran_query)
 

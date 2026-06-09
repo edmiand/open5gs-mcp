@@ -159,6 +159,25 @@ def _check_tun(device: str = "ogstun") -> dict:
         return {"status": "unknown", "device": device, "error": str(exc)}
 
 
+# ── RAN connectivity check ────────────────────────────────────────────────────
+
+def _check_ran() -> dict:
+    """Return gNB count from AMF /gnb-info. Lightweight: fetches page 0 only."""
+    url = _metrics_url("amf") + "/gnb-info?page=0&page_size=1"
+    try:
+        r = httpx.get(url, timeout=2.0)
+        data = r.json()
+        count = data.get("pager", {}).get("count", len(data.get("items", [])))
+        status = "ok" if count > 0 else "no_gnbs"
+        return {"status": status, "gnbs_connected": count}
+    except httpx.ConnectError:
+        return {"status": "unreachable", "gnbs_connected": 0}
+    except httpx.TimeoutException:
+        return {"status": "timeout", "gnbs_connected": 0}
+    except Exception as exc:
+        return {"status": "error", "gnbs_connected": 0, "error": str(exc)[:80]}
+
+
 # ── NF info endpoint probes ────────────────────────────────────────────────────
 
 def _metrics_url(nf: str) -> str:
@@ -214,6 +233,7 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
           },
           "mongodb": {"status": "ok"|"down", "subscribers": int, ...},
           "tun":     {"status": "ok"|"down"|"missing"|"unknown", ...},
+          "ran":     {"status": "ok"|"no_gnbs"|"unreachable"|"timeout"|"error", "gnbs_connected": int},
           "summary": {
             "overall":    "healthy" | "degraded" | "critical",
             "nfs_green":  int,
@@ -222,6 +242,7 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
             "nfs_total":  int,
             "mongodb":    str,
             "tun":        str,
+            "ran":        str,
           }
         }
     """
@@ -250,10 +271,13 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
 
     mongodb = _check_mongodb()
     tun = _check_tun()
+    amf_up = nfs_result.get("amf", {}).get("pid") is not None
+    ran = _check_ran() if amf_up else {"status": "unreachable", "gnbs_connected": 0}
 
     infra_ok = mongodb["status"] == "ok" and tun["status"] in ("ok", "down")
+    ran_ok = ran["status"] in ("ok", "unreachable")
     overall = (
-        "healthy"  if red == 0 and yellow == 0 and infra_ok else
+        "healthy"  if red == 0 and yellow == 0 and infra_ok and ran_ok else
         "degraded" if red == 0 else
         "critical"
     )
@@ -264,6 +288,7 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
         "nfs": nfs_result,
         "mongodb": mongodb,
         "tun": tun,
+        "ran": ran,
         "summary": {
             "overall":    overall,
             "nfs_green":  green,
@@ -272,5 +297,6 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
             "nfs_total":  len(_NFS),
             "mongodb":    mongodb["status"],
             "tun":        tun["status"],
+            "ran":        ran["status"],
         },
     }
