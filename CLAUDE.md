@@ -48,6 +48,14 @@ NRF SBI: http://localhost:7777
 - generate_credentials   — run cert/key generation scripts
 - nrf_registry_query     — query NRF for registered NF instances
 
+## Developer utilities
+- `mcp-curl` — shell script to inspect the running MCP server without a client
+  - default: table view of all tools (name + first sentence of description)
+  - `--tool <name>` — full description and parameter table for one tool
+  - `--schema <name>` — raw JSON inputSchema for one tool
+  - `--help` / `-h` — usage help
+  - Uses Streamable HTTP transport (POST /mcp); handles session handshake automatically
+
 ## Constraints
 - Never modify ../open5gs files
 - UPF operations require sudo — handle gracefully

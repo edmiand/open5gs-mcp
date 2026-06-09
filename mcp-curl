@@ -1,12 +1,55 @@
 #!/usr/bin/env bash
 # mcp-curl — list tools registered on the Open5GS MCP server
 #
-# Usage: ./mcp-curl [MCP_URL]
+# Usage: ./mcp-curl [--tool <tool_name>] [--schema <tool_name>] [MCP_URL]
 # Default URL: http://localhost:8080/mcp
 
 set -euo pipefail
 
-MCP_URL="${1:-${MCP_URL:-http://localhost:8080/mcp}}"
+usage() {
+cat <<'HELP'
+
+  mcp-curl — inspect tools on an MCP server
+
+  USAGE
+    mcp-curl [OPTIONS] [MCP_URL]
+
+  OPTIONS
+    --tool <name>     Show full description and parameter schema for a tool
+    --schema <name>   Print the raw JSON inputSchema for a tool
+    --help, -h        Show this help
+
+  ARGUMENTS
+    MCP_URL           MCP server base URL  (default: http://localhost:8080/mcp)
+                      Can also be set via the MCP_URL environment variable.
+
+  EXAMPLES
+    mcp-curl                               List all tools (table view)
+    mcp-curl --tool nf_lifecycle           Full detail for a single tool
+    mcp-curl --schema subscriber_crud      Raw JSON schema for a tool
+    mcp-curl http://10.0.0.1:8080/mcp      Connect to a remote server
+    MCP_URL=http://10.0.0.1:8080/mcp mcp-curl --tool subscriber_crud
+
+HELP
+}
+
+FULL_TOOL=""
+SCHEMA_TOOL=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h) usage; exit 0 ;;
+        --tool)
+            if [[ -z "${2:-}" || "${2:-}" == --* ]]; then usage; exit 0; fi
+            FULL_TOOL="$2"; shift 2 ;;
+        --schema)
+            if [[ -z "${2:-}" || "${2:-}" == --* ]]; then usage; exit 0; fi
+            SCHEMA_TOOL="$2"; shift 2 ;;
+        *)  POSITIONAL+=("$1"); shift ;;
+    esac
+done
+
+MCP_URL="${POSITIONAL[0]:-${MCP_URL:-http://localhost:8080/mcp}}"
 
 # ── handshake ──────────────────────────────────────────────────────────────────
 
@@ -44,26 +87,154 @@ curl -s -X POST "$MCP_URL" \
     --data-binary @<(printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}') \
     -o "$BODY"
 
-python3 - "$BODY" <<'EOF'
-import json, sys, re, textwrap
+python3 - "$BODY" "$MCP_URL" "$FULL_TOOL" "$SCHEMA_TOOL" <<'EOF'
+import json, sys, re, textwrap, shutil
+
+BOLD  = "\033[1m"
+CYAN  = "\033[1;36m"
+YEL   = "\033[1;33m"
+DIM   = "\033[2m"
+RESET = "\033[0m"
 
 raw = open(sys.argv[1]).read()
 data_line = next((l for l in raw.splitlines() if l.startswith("data: ")), None)
 if not data_line:
     print("ERROR: no response from server"); sys.exit(1)
 
-tools = json.loads(data_line[6:])["result"]["tools"]
-print(f"  {len(tools)} tool(s) registered on the MCP server\n")
+tools       = json.loads(data_line[6:])["result"]["tools"]
+url         = sys.argv[2] if len(sys.argv) > 2 else ""
+full_tool   = sys.argv[3] if len(sys.argv) > 3 else ""
+schema_tool = sys.argv[4] if len(sys.argv) > 4 else ""
 
-for t in tools:
-    # First sentence of the docstring as the one-liner
-    first = re.split(r'\.\s', t["description"].strip())[0].strip().rstrip(".")
-    print(f"  \033[1m{t['name']}\033[0m")
-    print(f"    {first}")
-    props = t.get("inputSchema", {}).get("properties", {})
-    if props:
-        params = "  ".join(f"{k}" for k in props)
-        print(f"    params: {params}")
+def clean_sentences(desc):
+    parts = re.split(r'(?<=[.!?])\s+', desc.strip())
+    return [re.sub(r'\s+', ' ', s).strip() for s in parts if s.strip()]
+
+# ── --full view ────────────────────────────────────────────────────────────────
+if full_tool:
+    t = next((t for t in tools if t["name"] == full_tool), None)
+    if not t:
+        names = ", ".join(x["name"] for x in tools)
+        print(f"ERROR: tool '{full_tool}' not found. Available: {names}", file=sys.stderr)
+        sys.exit(1)
+
+    term  = shutil.get_terminal_size((100, 24)).columns
+    width = min(term - 4, 76)
+    H     = "─"
+
+    print(f"\n  {CYAN}{BOLD}{t['name']}{RESET}  {DIM}{url}{RESET}")
+    print(f"  {'─' * (len(t['name']) + 2 + len(url) + 2)}")
     print()
+
+    for s in clean_sentences(t["description"]):
+        for line in textwrap.wrap(s, width, initial_indent="  ", subsequent_indent="  "):
+            print(line)
+    print()
+
+    schema = t.get("inputSchema", {})
+    props  = schema.get("properties", {})
+    req    = set(schema.get("required", []))
+
+    if props:
+        def type_str(p):
+            if "enum" in p:
+                return "enum: " + " | ".join(p["enum"])
+            t = p.get("type")
+            if t == "array":
+                return f"array[{p.get('items', {}).get('type', 'any')}]"
+            if t is None and "anyOf" in p:
+                types = [x.get("type","") for x in p["anyOf"] if x.get("type") != "null"]
+                return types[0] if types else "any"
+            return t or "any"
+
+        c0 = max(len(k) for k in props)
+        c1 = max(len(type_str(v)) for v in props.values())
+        c2 = 8  # "required" / "optional"
+
+        top = "  ┌" + H*(c0+2) + "┬" + H*(c1+2) + "┬" + H*(c2+2) + "┐"
+        sep = "  ├" + H*(c0+2) + "┼" + H*(c1+2) + "┼" + H*(c2+2) + "┤"
+        bot = "  └" + H*(c0+2) + "┴" + H*(c1+2) + "┴" + H*(c2+2) + "┘"
+        V   = "│"
+
+        def prow(name, typ, required, name_color=""):
+            req_str  = f"{CYAN}required{RESET}" if required else f"{DIM}optional{RESET}"
+            name_str = name_color + f"{name:<{c0}}" + RESET
+            return f"  {V} {name_str} {V} {typ:<{c1}} {V} {req_str} {V}"
+
+        print(f"  {BOLD}Parameters{RESET}")
+        print(top)
+        print(prow("Name", "Type", True, BOLD).replace(f"{CYAN}required{RESET}", f"{BOLD}Required{RESET}"))
+        print(sep)
+        for k, v in props.items():
+            print(prow(k, type_str(v), k in req, YEL))
+        print(bot)
+    else:
+        print(f"  {DIM}No parameters{RESET}")
+    print()
+    sys.exit(0)
+
+# ── --schema view ─────────────────────────────────────────────────────────────
+if schema_tool:
+    t = next((t for t in tools if t["name"] == schema_tool), None)
+    if not t:
+        names = ", ".join(x["name"] for x in tools)
+        print(f"ERROR: tool '{schema_tool}' not found. Available: {names}", file=sys.stderr)
+        sys.exit(1)
+
+    schema = t.get("inputSchema", {})
+
+    def colorize(text):
+        # keys
+        text = re.sub(r'("[\w]+")(: )', f'{CYAN}\\1{RESET}\\2', text)
+        # string values
+        text = re.sub(r'(: )(".*?")', f'\\1{YEL}\\2{RESET}', text)
+        # numbers and booleans
+        text = re.sub(r'(: )(\b(?:true|false|null|\d+)\b)', f'\\1{DIM}\\2{RESET}', text)
+        return text
+
+    raw_json = json.dumps(schema, indent=2)
+    print(f"\n  {CYAN}{BOLD}{t['name']}{RESET}  {DIM}inputSchema{RESET}\n")
+    for line in raw_json.splitlines():
+        print("  " + colorize(line))
+    print()
+    sys.exit(0)
+
+# ── table view ─────────────────────────────────────────────────────────────────
+def clean(desc, n=1):
+    parts = re.split(r'(?<=[.!?])\s+', desc.strip())
+    return [re.sub(r'\s+', ' ', s).strip() for s in parts[:n] if s.strip()]
+
+col1  = max(len(t["name"]) for t in tools)
+col2  = max(len(clean(t["description"])[0]) for t in tools)
+
+H, V  = "─", "│"
+top   = "┌" + H*(col1+2) + "┬" + H*(col2+2) + "┐"
+sep   = "├" + H*(col1+2) + "┼" + H*(col2+2) + "┤"
+bot   = "└" + H*(col1+2) + "┴" + H*(col2+2) + "┘"
+
+def row(left, right, left_ansi="", right_ansi=""):
+    lpad = left_ansi + left + RESET + " " * (col1 - len(left))
+    return V + f" {lpad} " + V + f" {right_ansi}{right:<{col2}}{RESET} " + V
+
+print(f"\n  {BOLD}{len(tools)} tools{RESET}  {DIM}{url}{RESET}\n")
+print("  " + top)
+print("  " + row("Tool", "Description", BOLD, BOLD))
+print("  " + sep)
+
+for i, t in enumerate(tools):
+    desc_lines = []
+    for s in clean(t["description"]):
+        desc_lines.extend(textwrap.wrap(s, col2))
+
+    for r, dline in enumerate(desc_lines or [""]):
+        name = t["name"] if r == 0 else ""
+        ansi = CYAN if r == 0 else ""
+        print("  " + row(name, dline, ansi))
+
+    if i < len(tools) - 1:
+        print("  " + sep)
+
+print("  " + bot)
+print()
 EOF
 rm -f "$BODY"
