@@ -8,7 +8,8 @@ from tools.nf_lifecycle import _SCRIPT
 
 _LOG_DIR = _SCRIPT.parent / "install" / "var" / "log" / "open5gs"
 
-_TRACE_NFS = ["amf", "ausf", "udm", "udr", "smf", "pcf", "nrf", "upf"]
+# NRF excluded — its logs contain NF-lifecycle events, not per-UE signaling (Fix 3)
+_TRACE_NFS = ["amf", "ausf", "udm", "udr", "smf", "pcf", "upf"]
 
 _LINE_RE = re.compile(
     r"^(?:\x1b\[[0-9;]*m)?"
@@ -20,21 +21,26 @@ _LINE_RE = re.compile(
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _SOURCE_RE = re.compile(r"\(([^)]+:\d+)\)$")
 
-_TAIL_BYTES = 2 * 1024 * 1024  # 2 MB
-_MAX_EVENTS = 200   # cap to keep LLM context manageable
-_MSG_MAX = 120      # truncate per-event message text
+# 10 MB: AMF/SMF run at debug level and generate 5-15x more volume than info (Fix 4)
+_TAIL_BYTES = 10 * 1024 * 1024
+_MAX_EVENTS = 200
+_MSG_MAX = 120
 
 _SEID_RE = re.compile(r"seid[:\s]+(?:0x)?([0-9a-fA-F]+)", re.I)
 _UE_IP_RE = re.compile(
     r"\b(10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)\b"
 )
 _DNN_RE = re.compile(r"dnn[:\s]+['\"]?(\w+)['\"]?", re.I)
-_NGAP_ID_RE = re.compile(r"(?:amf_ue_ngap_id|ran_ue_ngap_id)[:\s]+(\d+)", re.I)
+# Fix 1: handle bracket notation used in AMF debug logs: RAN_UE_NGAP_ID[42]
+_NGAP_ID_RE = re.compile(r"(?:amf_ue_ngap_id|ran_ue_ngap_id)[\[:\s]+(\d+)", re.I)
 _PDU_SESSION_ID_RE = re.compile(r"pdu[_\s]?session[_\s]?id[:\s]+(\d+)", re.I)
 _CAUSE_RE = re.compile(r"(?:5gmm|gmm)[_\s]?cause[_\s]?(?:code|value)?[:\s]+(\w+)", re.I)
 
+# Optional SUPI prefix present on some AMF debug lines (Fix 5)
+_SUPI_OPT = r"(?:\[imsi-\d+\]\s+)?"
+
 # (compiled pattern, message_type, from_entity, to_entity)
-# None from/to → will be filled from the NF context at call time
+# None from/to → filled from NF context at call time
 _MSG_RULES: list[tuple[re.Pattern, str, str | None, str | None]] = [
     (re.compile(r"Registration Request", re.I),               "Registration Request",              "UE",   "AMF"),
     (re.compile(r"Registration Accept", re.I),                "Registration Accept",               "AMF",  "UE"),
@@ -42,17 +48,22 @@ _MSG_RULES: list[tuple[re.Pattern, str, str | None, str | None]] = [
     (re.compile(r"Registration Reject", re.I),                "Registration Reject",               "AMF",  "UE"),
     (re.compile(r"Deregistration Request.*UE", re.I),         "Deregistration Request",            "UE",   "AMF"),
     (re.compile(r"Deregistration Request.*AMF", re.I),        "Deregistration Request",            "AMF",  "UE"),
-    (re.compile(r"\bAuthentication Request", re.I),            "Authentication Request",            "AMF",  "UE"),
+    (re.compile(r"\bAuthentication Request", re.I),           "Authentication Request",            "AMF",  "UE"),
     (re.compile(r"\bAuthentication Response", re.I),          "Authentication Response",           "UE",   "AMF"),
     (re.compile(r"\bAuthentication Failure", re.I),           "Authentication Failure",            "UE",   "AMF"),
     (re.compile(r"Security Mode Command", re.I),              "Security Mode Command",             "AMF",  "UE"),
     (re.compile(r"Security Mode Complete", re.I),             "Security Mode Complete",            "UE",   "AMF"),
     (re.compile(r"Security Mode Reject", re.I),               "Security Mode Reject",              "UE",   "AMF"),
+    # Fix 5: debug-level NAS events with optional SUPI prefix
+    (re.compile(_SUPI_OPT + r"Configuration update complete", re.I), "Configuration Update Complete", "UE", "AMF"),
     (re.compile(r"PDU Session Establishment Request", re.I),  "PDU Session Establishment Request", "UE",   "AMF"),
     (re.compile(r"PDU Session Establishment Accept", re.I),   "PDU Session Establishment Accept",  "AMF",  "UE"),
     (re.compile(r"PDU Session Establishment Reject", re.I),   "PDU Session Establishment Reject",  "AMF",  "UE"),
     (re.compile(r"PDU Session (Release|Deletion)", re.I),     "PDU Session Release",               None,   None),
     (re.compile(r"PDU Session Modification", re.I),           "PDU Session Modification",          None,   None),
+    # Fix 5: N2 PDU resource messages
+    (re.compile(r"PDUSessionResourceSetupRequest", re.I),     "PDUSessionResourceSetupRequest",    "AMF",  "gNB"),
+    (re.compile(r"PDUSessionResourceSetupResponse", re.I),    "PDUSessionResourceSetupResponse",   "gNB",  "AMF"),
     (re.compile(r"Nausf[_-]?UEAuthentication", re.I),        "Nausf-UEAuthentication",            "AMF",  "AUSF"),
     (re.compile(r"Nudm[_-]?UECM", re.I),                     "Nudm-UECM",                         None,   "UDM"),
     (re.compile(r"Nudm[_-]?SDM", re.I),                      "Nudm-SDM",                          None,   "UDM"),
@@ -65,8 +76,19 @@ _MSG_RULES: list[tuple[re.Pattern, str, str | None, str | None]] = [
     (re.compile(r"PFCP Session Deletion", re.I),              "PFCP Session Deletion",             "SMF",  "UPF"),
     (re.compile(r"PFCP Heartbeat", re.I),                     "PFCP Heartbeat",                    "SMF",  "UPF"),
     (re.compile(r"NRF Registration", re.I),                   "NRF Registration",                  None,   "NRF"),
+    # Fix 5: AMF debug-level N2/NAS transport and context messages
+    (re.compile(r"NGSetupRequest", re.I),                     "NGSetupRequest",                    "gNB",  "AMF"),
+    (re.compile(r"UplinkNASTransport", re.I),                 "UplinkNASTransport",                "UE",   "AMF"),
+    (re.compile(r"DownlinkNASTransport", re.I),               "DownlinkNASTransport",              "AMF",  "UE"),
+    # Fix 5: camelCase NGAP context setup — placed before the space-separated fallback
+    (re.compile(r"InitialContextSetupRequest", re.I),         "InitialContextSetupRequest",        "AMF",  "gNB"),
+    (re.compile(r"InitialContextSetupResponse", re.I),        "InitialContextSetupResponse",       "gNB",  "AMF"),
     (re.compile(r"Initial UE Message", re.I),                 "Initial UE Message",                "gNB",  "AMF"),
     (re.compile(r"Initial Context Setup", re.I),              "Initial Context Setup",             "AMF",  "gNB"),
+    # Fix 5: camelCase UE context release variants before the generic fallback
+    (re.compile(r"UEContextReleaseRequest", re.I),            "UEContextReleaseRequest",           "gNB",  "AMF"),
+    (re.compile(r"UEContextReleaseCommand", re.I),            "UEContextReleaseCommand",           "AMF",  "gNB"),
+    (re.compile(r"UEContextReleaseComplete", re.I),           "UEContextReleaseComplete",          "gNB",  "AMF"),
     (re.compile(r"UE Context Release", re.I),                 "UE Context Release",                None,   None),
     (re.compile(r"5GMM.*[Cc]ause|[Cc]ause.*5GMM", re.I),     "5GMM Cause",                        None,   None),
 ]
@@ -186,6 +208,7 @@ def _search_amf_log(bare_imsi: str, time_window_minutes: int) -> dict:
         "ngap_ids": set(),
         "pdu_session_ids": set(),
         "cause_codes": [],
+        "tail_start_ts": None,
         "error": None,
     }
 
@@ -200,7 +223,16 @@ def _search_amf_log(bare_imsi: str, time_window_minutes: int) -> dict:
     year = datetime.now().year
     cutoff_ts = datetime.now(timezone.utc) - timedelta(minutes=time_window_minutes)
 
-    for raw_line in text.splitlines():
+    lines = text.splitlines()
+
+    # Find the earliest timestamp in the tail for log-coverage warnings (Fix 4)
+    for raw_line in lines:
+        rec = _parse_line(raw_line, year)
+        if rec is not None:
+            result["tail_start_ts"] = rec["ts"]
+            break
+
+    for raw_line in lines:
         if bare_imsi not in raw_line:
             continue
         rec = _parse_line(raw_line, year)
@@ -235,6 +267,60 @@ def _search_amf_log(bare_imsi: str, time_window_minutes: int) -> dict:
     return result
 
 
+def _search_amf_pre_auth(
+    ngap_ids: list[str],
+    before_ts: datetime,
+    lookback_seconds: int = 15,
+) -> list[dict]:
+    """Return AMF log lines referencing these NGAP IDs in [before_ts - lookback, before_ts).
+
+    Captures InitialUEMessage, Registration Request, and auth challenge lines that
+    appear before the AMF knows the SUPI.
+    """
+    if not ngap_ids:
+        return []
+
+    text, err = _read_log_tail("amf")
+    if err or not text:
+        return []
+
+    # Match either NGAP ID type with any of the extracted ID values
+    ngap_val_alt = "|".join(re.escape(id_) for id_ in ngap_ids)
+    ngap_pattern = re.compile(
+        r"(?:amf_ue_ngap_id|ran_ue_ngap_id)[\[:\s]+(?:" + ngap_val_alt + r")\b",
+        re.I,
+    )
+
+    year = datetime.now().year
+    window_start = before_ts - timedelta(seconds=lookback_seconds)
+    results: list[dict] = []
+    seen_raws: set[str] = set()
+
+    for raw_line in text.splitlines():
+        if "NGAP_ID" not in raw_line.upper():
+            continue
+        if not ngap_pattern.search(raw_line):
+            continue
+        rec = _parse_line(raw_line, year)
+        if rec is None:
+            continue
+        if not (window_start <= rec["ts"] < before_ts):
+            continue
+        raw_clean = _ANSI_RE.sub("", raw_line).rstrip()
+        if raw_clean in seen_raws:
+            continue
+        seen_raws.add(raw_clean)
+        results.append({
+            "ts": rec["ts"],
+            "ts_str": rec["ts_str"],
+            "level": rec["level"],
+            "message": rec["message"],
+            "raw": raw_clean,
+        })
+
+    return results
+
+
 def _search_nf_by_time(
     nf: str,
     start_ts: datetime,
@@ -248,6 +334,7 @@ def _search_nf_by_time(
         "seids": set(),
         "ue_ips": set(),
         "dnns": set(),
+        "tail_start_ts": None,
         "error": None,
     }
 
@@ -265,6 +352,9 @@ def _search_nf_by_time(
         rec = _parse_line(raw_line, year)
         if rec is None:
             continue
+
+        if result["tail_start_ts"] is None:
+            result["tail_start_ts"] = rec["ts"]
 
         in_window = start_ts <= rec["ts"] <= end_ts
         has_imsi = bool(bare_imsi and bare_imsi in raw_line)
@@ -307,13 +397,19 @@ def get_ue_trace(
     supi: str,
     time_window_minutes: int = 60,
     include_nfs: list[str] | None = None,
+    window_padding_seconds: int = 5,
+    include_nrf: bool = False,
 ) -> dict:
     """Collect full e2e trace for a UE across Open5GS NFs.
 
     Args:
-        supi:                 IMSI/SUPI string (various formats accepted).
-        time_window_minutes:  How far back to search in AMF log (default 60).
-        include_nfs:          NFs to search; defaults to all trace NFs.
+        supi:                   IMSI/SUPI string (various formats accepted).
+        time_window_minutes:    How far back to search in AMF log (default 60).
+        include_nfs:            NFs to search; defaults to all trace NFs.
+        window_padding_seconds: Seconds added to both ends of the derived search
+                                window (default 5; increase for loaded systems).
+        include_nrf:            If True, also search NRF and include NF-lifecycle
+                                events marked direction="internal".
 
     Returns structured trace data suitable for Mermaid sequence diagram generation.
     """
@@ -326,31 +422,65 @@ def get_ue_trace(
     if not (1 <= time_window_minutes <= 1440):
         return {"ok": False, "error": "time_window_minutes must be between 1 and 1440"}
 
+    if not (0 <= window_padding_seconds <= 60):
+        return {"ok": False, "error": "window_padding_seconds must be between 0 and 60"}
+
+    _valid_nfs = _TRACE_NFS + ["nrf"]
     if include_nfs is None:
         nfs_to_search = list(_TRACE_NFS)
     else:
         nfs_to_search = [n.lower() for n in include_nfs]
-        invalid = [n for n in nfs_to_search if n not in _TRACE_NFS]
+        invalid = [n for n in nfs_to_search if n not in _valid_nfs]
         if invalid:
-            return {"ok": False, "error": f"Unknown NF(s): {invalid}. Valid: {_TRACE_NFS}"}
+            return {"ok": False, "error": f"Unknown NF(s): {invalid}. Valid: {_valid_nfs}"}
+
+    if include_nrf and "nrf" not in nfs_to_search:
+        nfs_to_search = nfs_to_search + ["nrf"]
 
     # ── Step 1: anchor on AMF ─────────────────────────────────────────────────
     nf_errors: dict[str, str] = {}
-    amf_result: dict = {"lines": [], "first_ts": None, "last_ts": None,
-                        "ngap_ids": [], "pdu_session_ids": [], "cause_codes": [], "error": None}
+    amf_result: dict = {
+        "lines": [], "first_ts": None, "last_ts": None,
+        "ngap_ids": [], "pdu_session_ids": [], "cause_codes": [],
+        "tail_start_ts": None, "error": None,
+    }
 
     if "amf" in nfs_to_search:
         amf_result = _search_amf_log(bare_imsi, time_window_minutes)
         if amf_result["error"]:
             nf_errors["amf"] = amf_result["error"]
 
-    # ── Step 2: derive search window ──────────────────────────────────────────
+    # ── Step 1b: collect pre-auth AMF events via NGAP IDs (Fix 1) ────────────
+    if "amf" in nfs_to_search and amf_result.get("ngap_ids") and amf_result.get("first_ts"):
+        pre_auth = _search_amf_pre_auth(amf_result["ngap_ids"], amf_result["first_ts"])
+        if pre_auth:
+            existing_raws = {ln["raw"] for ln in amf_result["lines"]}
+            for ln in pre_auth:
+                if ln["raw"] not in existing_raws:
+                    amf_result["lines"].append(ln)
+            pre_first = min(ln["ts"] for ln in pre_auth)
+            if pre_first < amf_result["first_ts"]:
+                amf_result["first_ts"] = pre_first
+
+    # ── Step 2: derive search window (Fix 2: 5s padding, configurable) ───────
     if amf_result["first_ts"] and amf_result["last_ts"]:
-        search_start = amf_result["first_ts"] - timedelta(seconds=2)
-        search_end = amf_result["last_ts"] + timedelta(seconds=2)
+        search_start = amf_result["first_ts"] - timedelta(seconds=window_padding_seconds)
+        search_end = amf_result["last_ts"] + timedelta(seconds=window_padding_seconds)
     else:
         search_end = datetime.now(timezone.utc)
         search_start = search_end - timedelta(minutes=time_window_minutes)
+
+    # Warn if AMF log tail doesn't cover the full window (Fix 4)
+    if "amf" in nfs_to_search:
+        amf_tail_start = amf_result.get("tail_start_ts")
+        if amf_tail_start and amf_tail_start > search_start:
+            warn = (
+                f"log tail starts at {amf_tail_start.strftime('%m/%d %H:%M:%S')}, "
+                f"which is after the requested window start "
+                f"({search_start.strftime('%m/%d %H:%M:%S')}) "
+                f"— trace may be incomplete; consider increasing _TAIL_BYTES"
+            )
+            nf_errors["amf"] = (nf_errors.get("amf", "") + "; " + warn).lstrip("; ")
 
     # ── Step 3: search remaining NFs ──────────────────────────────────────────
     nf_data: dict[str, dict] = {}
@@ -365,6 +495,14 @@ def get_ue_trace(
         nf_data[nf] = data
         if data["error"]:
             nf_errors[nf] = data["error"]
+        tail_start = data.get("tail_start_ts")
+        if tail_start and tail_start > search_start:
+            warn = (
+                f"log tail starts at {tail_start.strftime('%m/%d %H:%M:%S')}, "
+                f"which is after the requested window start "
+                f"— trace may be incomplete; consider increasing _TAIL_BYTES"
+            )
+            nf_errors[nf] = (nf_errors.get(nf, "") + "; " + warn).lstrip("; ")
         if nf == "smf":
             smf_seids = data.get("seids", [])
 
@@ -374,10 +512,21 @@ def get_ue_trace(
         else:
             # No PFCP SEIDs available — searching UPF without them returns all
             # traffic in the window, unrelated to this UE.
-            upf_data = {"lines": [], "seids": [], "ue_ips": [], "dnns": [], "error": None}
+            upf_data = {
+                "lines": [], "seids": [], "ue_ips": [], "dnns": [],
+                "tail_start_ts": None, "error": None,
+            }
         nf_data["upf"] = upf_data
         if upf_data["error"]:
             nf_errors["upf"] = upf_data["error"]
+        tail_start = upf_data.get("tail_start_ts")
+        if tail_start and tail_start > search_start:
+            warn = (
+                f"log tail starts at {tail_start.strftime('%m/%d %H:%M:%S')}, "
+                f"which is after the requested window start "
+                f"— trace may be incomplete; consider increasing _TAIL_BYTES"
+            )
+            nf_errors["upf"] = (nf_errors.get("upf", "") + "; " + warn).lstrip("; ")
 
     # ── Step 4: build structured events ───────────────────────────────────────
     all_events: list[dict] = []
@@ -386,8 +535,8 @@ def get_ue_trace(
         for line_data in data.get("lines", []):
             direction, from_e, to_e, msg_type = _infer_event(nf, line_data["message"])
             msg = line_data["message"]
-            all_events.append({
-                "_sort_ts": line_data["ts"],   # datetime — removed after sort
+            event: dict = {
+                "_sort_ts": line_data["ts"],
                 "timestamp": line_data["ts_str"],
                 "nf": nf,
                 "level": line_data["level"],
@@ -396,7 +545,11 @@ def get_ue_trace(
                 "from": from_e,
                 "to": to_e,
                 "message": msg if len(msg) <= _MSG_MAX else msg[:_MSG_MAX] + "…",
-            })
+            }
+            if nf == "nrf":
+                event["direction"] = "internal"
+                event["note"] = "NF-lifecycle, not UE-signaling"
+            all_events.append(event)
 
     all_events.sort(key=lambda e: e["_sort_ts"])
 
@@ -424,7 +577,6 @@ def get_ue_trace(
     for e in all_events:
         del e["_sort_ts"]
 
-    # Participants in order of first appearance, filtered to known set
     seen: list[str] = []
     for e in all_events:
         for p in (e["from"], e["to"]):
