@@ -23,6 +23,7 @@ from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
 from tools.read_nf_config import read_nf_config as _read_nf_config
 from tools.ue_trace import get_ue_trace as _get_ue_trace
 from tools.amf_ran_query import amf_ran_query as _amf_ran_query
+from tools.nf_resource_usage import nf_resource_usage as _nf_resource_usage
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -230,6 +231,35 @@ async def get_ue_trace(
       log was unreadable.
     """
     return await asyncio.to_thread(_get_ue_trace, supi, time_window_minutes, include_nfs)
+
+
+@mcp.tool()
+async def nf_resource_usage(
+    nfs: list[str] | None = None,
+    sample_interval: float = 1.0,
+) -> dict:
+    """CPU, memory, and I/O utilisation for each running Open5GS NF vs system totals.
+
+    Takes two snapshots separated by sample_interval to compute per-process CPU %
+    and I/O rates — the call blocks for at least that duration. Use this to
+    identify which NF is consuming resources, spot memory leaks, or compare
+    Open5GS load against overall system capacity.
+
+    nfs:             NF names to sample (e.g. ["amf","smf"]). Omit for all NFs.
+                     Valid: amf smf upf ausf udm udr pcf nssf bsf nrf scp webui
+    sample_interval: Sampling window in seconds (0.1 – 10.0, default 1.0).
+                     Larger values give more accurate CPU averages.
+
+    Returns ok, timestamp, sample_interval_s, and:
+      nfs        — per-NF {status, pid, cpu_percent, memory{rss_mb,vms_mb,percent},
+                   io{read/write_bytes_per_s, read/write_total_mb}, threads}
+      aggregates — nfs_running, total_cpu_percent, total_rss_mb,
+                   total_io_read/write_bytes_per_s across all sampled NFs
+      system     — cpu_count_logical/physical, cpu_percent_used,
+                   memory_total/available/used_mb, memory_percent_used, disk_io
+      open5gs_share — cpu_pct_of_system_usage, memory_pct_of_total
+    """
+    return await asyncio.to_thread(_nf_resource_usage, nfs, sample_interval)
 
 
 @mcp.tool()
