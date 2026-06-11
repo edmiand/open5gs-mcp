@@ -102,9 +102,12 @@ def nf_resource_usage(
     for nf, proc in procs.items():
         try:
             proc.cpu_percent(interval=None)  # prime the CPU counter (returns 0 here)
-            io_t0[nf] = proc.io_counters()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+        try:
+            io_t0[nf] = proc.io_counters()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass  # root-owned processes (e.g. UPF) deny /proc/<pid>/io to non-root
 
     psutil.cpu_percent(interval=None)  # prime system CPU counter
     sys_io_t0 = psutil.disk_io_counters()
@@ -125,33 +128,36 @@ def nf_resource_usage(
             mem = proc.memory_info()
             mem_pct = proc.memory_percent()
             threads = proc.num_threads()
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            nf_data[nf] = {"status": "error", "pid": pid, "error": str(exc)}
+            continue
+
+        entry: dict = {
+            "status": "running",
+            "pid": pid,
+            "cpu_percent": round(cpu, 2),
+            "memory": {
+                "rss_mb": round(mem.rss / 1024**2, 2),
+                "vms_mb": round(mem.vms / 1024**2, 2),
+                "percent": round(mem_pct, 3),
+            },
+            "threads": threads,
+        }
+
+        try:
             io_t1 = proc.io_counters()
-
-            entry: dict = {
-                "status": "running",
-                "pid": pid,
-                "cpu_percent": round(cpu, 2),
-                "memory": {
-                    "rss_mb": round(mem.rss / 1024**2, 2),
-                    "vms_mb": round(mem.vms / 1024**2, 2),
-                    "percent": round(mem_pct, 3),
-                },
-                "threads": threads,
-            }
-
             t0 = io_t0.get(nf)
-            if t0 is not None and io_t1 is not None:
+            if t0 is not None:
                 entry["io"] = {
                     "read_bytes_per_s": round((io_t1.read_bytes - t0.read_bytes) / sample_interval),
                     "write_bytes_per_s": round((io_t1.write_bytes - t0.write_bytes) / sample_interval),
                     "read_total_mb": round(io_t1.read_bytes / 1024**2, 2),
                     "write_total_mb": round(io_t1.write_bytes / 1024**2, 2),
                 }
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            entry["io_note"] = "unavailable (process runs as root)"
 
-            nf_data[nf] = entry
-
-        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
-            nf_data[nf] = {"status": "error", "pid": pid, "error": str(exc)}
+        nf_data[nf] = entry
 
     # ── System totals ───────────────────────────────────────────────────────
     sys_cpu_pct = psutil.cpu_percent(interval=None)
