@@ -23,7 +23,6 @@ from tools.subscriber_create import subscriber_create as _subscriber_create
 from tools.subscriber_delete import subscriber_delete as _subscriber_delete
 from tools.subscriber_update_profile import subscriber_update_profile as _subscriber_update_profile
 from tools.subscriber_update_slices import subscriber_update_slices as _subscriber_update_slices
-from tools.subscriber_repair import subscriber_repair as _subscriber_repair
 from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
 from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
 from tools.read_nf_config import read_nf_config as _read_nf_config
@@ -214,21 +213,6 @@ async def subscriber_update_slices(imsi: str, slices: list) -> dict:
     """
     return await asyncio.to_thread(_subscriber_update_slices, imsi, slices)
 
-
-@mcp.tool()
-async def subscriber_repair(imsi: str, action: str = "diagnose") -> dict:
-    """Diagnose and repair corrupted subscriber documents.
-
-    imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
-    action: One of:
-              diagnose (default) — compare against schema defaults, report missing/broken fields
-              restore_defaults — reset to defaults but preserve IMSI + security credentials
-              restore_full — complete reset to defaults (loses all data; use with caution)
-
-    Returns diagnosis with current fields, missing fields, and slice validation results.
-    For restore actions, returns the repaired document.
-    """
-    return await asyncio.to_thread(_subscriber_repair, imsi, action)
 
 
 @mcp.tool()

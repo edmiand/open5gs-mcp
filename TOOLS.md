@@ -665,69 +665,6 @@ subscriber_update_slices(imsi="999700000000001", slices=slices)
 
 ---
 
-### Repair Operations
-
-#### `subscriber_repair`
-
-Diagnose and repair corrupted subscriber documents.
-
-**Parameters:**
-- `imsi` (string, required): IMSI digits (10-15) or SUPI format
-- `action` (string, optional): One of `diagnose` (default), `restore_defaults`, `restore_full`
-
-**Returns:**
-
-For `diagnose`:
-```python
-{
-    "ok": True,
-    "action": "diagnose",
-    "imsi": "999700000000001",
-    "diagnosis": {
-        "current_fields": ["imsi", "security", "slice", ...],
-        "missing_top_level_fields": ["ambr"],
-        "problematic_slices": [
-            "slice[0].session[0] missing 'type'",
-            "slice[0].session[0] missing 'qos'"
-        ]
-    },
-    "subscriber": {...}  # Full corrupted document
-}
-```
-
-For `restore_defaults`:
-```python
-{
-    "ok": True,
-    "action": "restore_defaults",
-    "imsi": "999700000000001",
-    "note": "Restored to defaults, preserving IMSI and security credentials.",
-    "subscriber": {...}
-}
-```
-
-**Examples:**
-
-```python
-# Diagnose what's wrong
-diag = subscriber_repair(imsi="999700000000001", action="diagnose")
-print(diag["diagnosis"]["problematic_slices"])
-
-# Restore to safe defaults (preserves auth credentials)
-subscriber_repair(imsi="999700000000001", action="restore_defaults")
-
-# Full reset (⚠️ loses all data including auth!)
-subscriber_repair(imsi="999700000000001", action="restore_full")
-```
-
-**Use cases:**
-- Debug WebUI corruption issues
-- Recover from malformed slice updates
-- Validate subscriber schema compliance
-- Emergency subscriber recovery
-
----
-
 ## UE Session Management
 
 ### `list_ue_sessions`
@@ -1177,13 +1114,6 @@ for nf, stats in by_cpu[:3]:
 4. **Add/modify DNNs** — `subscriber_update_slices(imsi="...", slices=[...])`
 5. **Verify in WebUI** — http://localhost:9999
 
-### Subscriber Recovery Workflow
-
-1. **Diagnose corruption** — `subscriber_repair(imsi="...", action="diagnose")`
-2. **Review diagnosis** — check `missing_top_level_fields` and `problematic_slices`
-3. **Restore safely** — `subscriber_repair(imsi="...", action="restore_defaults")`
-4. **Re-apply customizations** — `subscriber_update_profile()` and `subscriber_update_slices()`
-
 ---
 
 ## Error Handling
@@ -1225,4 +1155,3 @@ else:
 - [CLAUDE.md](CLAUDE.md) — Project context and architecture
 - [README.md](README.md) — Quick start and overview
 - [SUBSCRIBER_TOOLS_MIGRATION.md](SUBSCRIBER_TOOLS_MIGRATION.md) — Migration from old `subscriber_crud` tool
-- [SUBSCRIBER_REPAIR_GUIDE.md](SUBSCRIBER_REPAIR_GUIDE.md) — Recovery from subscriber corruption
