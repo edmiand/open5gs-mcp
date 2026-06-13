@@ -1,0 +1,131 @@
+"""Update subscriber slice and session configuration in Open5GS MongoDB."""
+
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+
+from ._subscriber_util import (
+	normalize_imsi, get_subscribers_col, serialize, redact, deep_merge
+)
+
+
+def subscriber_update_slices(imsi: str, slices: list) -> dict:
+	"""
+	Update subscriber slice and session configuration.
+
+	This is separate from subscriber_update_profile because slices involve
+	complex nested arrays and are conceptually distinct from profile parameters.
+
+	Args:
+		imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
+
+		slices: List of slice objects. Each slice:
+		  {
+			"sst": <int>,              # Slice Service Type (required)
+			"sd": "<string>",          # Slice Differentiator (optional)
+			"default_indicator": <bool>,  # Is this the default slice? (optional)
+			"session": [
+			  {
+				"name": "<DNN or APN>",  # Data Network Name (required)
+				"type": <int>,           # 1=IPv4, 2=IPv6, 3=IPv4v6 (optional)
+				"qos": {
+				  "index": <5QI>,        # 5G QoS Indicator (optional)
+				  "arp": {
+					"priority_level": <int>,
+					"pre_emption_capability": <0-1>,
+					"pre_emption_vulnerability": <0-1>
+				  }
+				},
+				"ambr": {
+				  "downlink": {"value": <int>, "unit": <0-3>},
+				  "uplink": {"value": <int>, "unit": <0-3>}
+				},
+				"ue": {
+				  "ipv4": "<IP>",        # UE assigned IPv4 (optional)
+				  "ipv6": "<IP>"         # UE assigned IPv6 (optional)
+				},
+				"smf": {
+				  "ipv4": "<IP>",        # SMF assigned IPv4 (optional)
+				  "ipv6": "<IP>"         # SMF assigned IPv6 (optional)
+				},
+				"pcc_rule": [
+				  {
+					"flow": [
+					  {
+						"direction": <int>,  # 0=down, 1=up, 2=bidir
+						"description": "<string>"
+					  }
+					],
+					"qos": {...}           # Same as session.qos
+				  }
+				],
+				"lbo_roaming_allowed": <bool>  # Local breakout roaming
+			  }
+			]
+		  }
+
+		The entire slice array is replaced (not merged). All existing slices
+		are discarded; pass your full desired slice configuration.
+
+	Returns:
+		{"ok": True, "subscriber": {...}} on success (secrets redacted).
+		{"ok": False, "error": str} on failure.
+
+	Example:
+		Add a second DNN to an existing slice:
+		  slices = [
+			{
+			  "sst": 1,
+			  "default_indicator": True,
+			  "session": [
+				{"name": "internet", "type": 3, ...},  # Keep existing
+				{"name": "iotnet", "type": 3, ...}     # Add new
+			  ]
+			}
+		  ]
+		  subscriber_update_slices(imsi, slices)
+	"""
+	norm = normalize_imsi(imsi)
+	if norm is None:
+		return {"ok": False, "error": f"Invalid IMSI '{imsi}'. Expected 10-15 digits or 'imsi-<digits>'."}
+
+	if not isinstance(slices, list):
+		return {"ok": False, "error": "slices must be a list"}
+
+	if not slices:
+		return {"ok": False, "error": "slices list cannot be empty; at least one slice with one session is required"}
+
+	try:
+		col = get_subscribers_col()
+		existing = col.find_one({"imsi": norm})
+		if existing is None:
+			return {"ok": False, "error": f"Subscriber {norm} not found"}
+
+		# Validate that each slice has at least one session with a name
+		for i, slice_obj in enumerate(slices):
+			if not isinstance(slice_obj, dict):
+				return {"ok": False, "error": f"slice[{i}] must be a dict"}
+			if "sst" not in slice_obj:
+				return {"ok": False, "error": f"slice[{i}] missing required field 'sst'"}
+			if "session" not in slice_obj or not isinstance(slice_obj["session"], list):
+				return {"ok": False, "error": f"slice[{i}] missing or invalid 'session' array"}
+			if not slice_obj["session"]:
+				return {"ok": False, "error": f"slice[{i}].session cannot be empty; at least one session is required"}
+			for j, session in enumerate(slice_obj["session"]):
+				if not isinstance(session, dict):
+					return {"ok": False, "error": f"slice[{i}].session[{j}] must be a dict"}
+				if "name" not in session:
+					return {"ok": False, "error": f"slice[{i}].session[{j}] missing required field 'name' (DNN)"}
+
+		# Update slices (replace entire array)
+		merged = serialize(existing)
+		merged["slice"] = slices
+		merged.pop("_id", None)
+		col.replace_one({"imsi": norm}, merged)
+
+		# Fetch and return updated doc
+		updated = col.find_one({"imsi": norm})
+		return {"ok": True, "subscriber": redact(serialize(updated))}
+
+	except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
+		return {"ok": False, "error": f"MongoDB connection failed: {exc}"}
+	except Exception as exc:
+		return {"ok": False, "error": str(exc)}

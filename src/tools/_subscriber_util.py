@@ -1,0 +1,117 @@
+"""Shared utilities for subscriber tools."""
+
+import copy
+import re
+from typing import Any
+
+import bson
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+
+_MONGO_URI = "mongodb://localhost:27017"
+_DB = "open5gs"
+_COL = "subscribers"
+_IMSI_RE = re.compile(r"^\d{10,15}$")
+
+
+def normalize_imsi(raw: str) -> str | None:
+	"""Normalize IMSI: accept raw digits or 'imsi-<digits>' format."""
+	s = raw.strip().lower().removeprefix("imsi-")
+	return s if _IMSI_RE.match(s) else None
+
+
+def get_subscribers_col():
+	"""Get MongoDB subscribers collection; raises on connection failure."""
+	return MongoClient(_MONGO_URI, serverSelectionTimeoutMS=3000)[_DB][_COL]
+
+
+def serialize(doc: Any) -> Any:
+	"""Recursively convert BSON types to JSON-safe Python primitives."""
+	if isinstance(doc, dict):
+		return {k: serialize(v) for k, v in doc.items()}
+	if isinstance(doc, list):
+		return [serialize(i) for i in doc]
+	if isinstance(doc, bson.ObjectId):
+		return str(doc)
+	if isinstance(doc, bson.Int64):
+		return int(doc)
+	return doc
+
+
+def redact(doc: Any) -> Any:
+	"""Redact security.k and security.opc before returning to callers."""
+	if not isinstance(doc, dict):
+		return doc
+	result = dict(doc)
+	if "security" in result and isinstance(result["security"], dict):
+		sec = dict(result["security"])
+		if "k" in sec:
+			sec["k"] = "***"
+		if "opc" in sec:
+			sec["opc"] = "***"
+		result["security"] = sec
+	return result
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+	"""Merge override into a deep copy of base; override wins on scalar conflicts."""
+	result = copy.deepcopy(base)
+	for k, v in override.items():
+		if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+			result[k] = deep_merge(result[k], v)
+		else:
+			result[k] = copy.deepcopy(v)
+	return result
+
+
+# Default subscriber document (matches Mongoose schema defaults)
+DEFAULT_SUBSCRIBER: dict[str, Any] = {
+	"schema_version": 1,
+	"msisdn": [],
+	"imeisv": [],
+	"mme_host": [],
+	"mme_realm": [],
+	"purge_flag": [],
+	"security": {
+		"k":   "",
+		"op":  None,
+		"opc": "",
+		"amf": "8000",
+		"rand": None,
+		"sqn":  0,
+	},
+	"ambr": {
+		"downlink": {"value": 1, "unit": 3},  # 1 Gbps
+		"uplink":   {"value": 1, "unit": 3},
+	},
+	"slice": [
+		{
+			"sst": 1,
+			"default_indicator": True,
+			"session": [
+				{
+					"name": "internet",
+					"type": 3,  # IPv4v6
+					"qos": {
+						"index": 9,  # 5QI-9
+						"arp": {
+							"priority_level": 8,
+							"pre_emption_capability": 1,
+							"pre_emption_vulnerability": 1,
+						},
+					},
+					"ambr": {
+						"downlink": {"value": 1, "unit": 3},
+						"uplink":   {"value": 1, "unit": 3},
+					},
+					"pcc_rule": [],
+				}
+			],
+		}
+	],
+	"access_restriction_data":   32,
+	"subscriber_status":          0,
+	"operator_determined_barring": 0,
+	"network_access_mode":         0,
+	"subscribed_rau_tau_timer":   12,
+}

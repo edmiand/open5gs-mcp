@@ -31,14 +31,19 @@ NRF SBI: http://localhost:7777
 - Always use `curl --http2-prior-knowledge`; httpx/httpcore will fail with HTTP/1.1
 
 ## MCP tools — built
-- nf_lifecycle          — start/stop/restart/status any NF
-- system_health_snapshot — full health check in one call
-- subscriber_crud        — CRUD against subscribers collection
-- list_ue_sessions       — active UE contexts and PDU sessions (AMF+SMF join)
-- read_nf_config         — read any NF YAML config
-- tail_nf_logs           — filtered log reads across NFs
-- get_ue_trace           — e2e UE call flow reconstruction across all NFs
-- amf_ran_query          — connected gNBs, registered UEs, PLMN/slice config (OAM API)
+- nf_lifecycle              — start/stop/restart/status any NF
+- system_health_snapshot    — full health check in one call
+- subscriber_read           — read a single subscriber or list with filters
+- subscriber_create         — create new subscriber with defaults
+- subscriber_delete         — delete subscriber by IMSI
+- subscriber_update_profile — update profile params (security, AMBR, status, restrictions)
+- subscriber_update_slices  — update slice/session (DNN) configuration
+- list_ue_sessions          — active UE contexts and PDU sessions (AMF+SMF join)
+- read_nf_config            — read any NF YAML config
+- tail_nf_logs              — filtered log reads across NFs
+- get_ue_trace              — e2e UE call flow reconstruction across all NFs
+- amf_ran_query             — connected gNBs, registered UEs, PLMN/slice config (OAM API)
+- nf_resource_usage         — CPU/RAM/I/O per-NF utilisation vs system totals
 
 ## MCP tools — not yet built
 - subscriber_auth_reset  — update K/OPc/SQN for a SUPI

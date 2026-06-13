@@ -17,7 +17,13 @@ from mcp.server.fastmcp import FastMCP
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
 from tools.system_health_snapshot import system_health_snapshot as _health
-from tools.subscriber_crud import subscriber_crud as _subscriber_crud
+from tools.subscriber_read import subscriber_read as _subscriber_read
+from tools.subscriber_read import subscriber_list as _subscriber_list
+from tools.subscriber_create import subscriber_create as _subscriber_create
+from tools.subscriber_delete import subscriber_delete as _subscriber_delete
+from tools.subscriber_update_profile import subscriber_update_profile as _subscriber_update_profile
+from tools.subscriber_update_slices import subscriber_update_slices as _subscriber_update_slices
+from tools.subscriber_repair import subscriber_repair as _subscriber_repair
 from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
 from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
 from tools.read_nf_config import read_nf_config as _read_nf_config
@@ -97,34 +103,132 @@ async def system_health_snapshot(log_minutes: int = 15) -> dict:
 
 
 @mcp.tool()
-async def subscriber_crud(
-    operation: Literal["create", "read", "update", "delete", "list"],
-    imsi: str | None = None,
-    data: dict | None = None,
-    limit: int = 100,
-    filter: dict | None = None,
-) -> dict:
-    """Full CRUD against the Open5GS subscribers MongoDB collection.
+async def subscriber_read(imsi: str) -> dict:
+    """Read a single subscriber record by IMSI.
 
-    operation: create | read | update | delete | list
-    imsi:  IMSI (10-15 digits) or SUPI ("imsi-<digits>").
-           Required for create / read / update / delete.
-    data:  Subscriber fields for create or update (deep-merged with defaults).
-           Minimum for create: {"security": {"k": "<Ki>", "opc": "<OPc>"}}
-           Any subset of: security, ambr, slice, msisdn, access_restriction_data.
-    limit: Max results for list (default 100, max 1000).
-    filter: Equality filter for list, e.g. {"subscriber_status": 1} to find
-            barred subscribers. Allowed keys: subscriber_status,
-            network_access_mode, access_restriction_data,
-            operator_determined_barring.
+    imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
 
-    subscriber_status: 0=service_granted, 1=operator_barring (cannot register)
-    AMBR units: 0=bps 1=Kbps 2=Mbps 3=Gbps  |  Session type: 1=IPv4 2=IPv6 3=IPv4v6
-
-    Returns subscriber document for create/read/update; deletion status for
-    delete; subscriber list + count for list.
+    Returns subscriber document (security.k and security.opc redacted).
     """
-    return await asyncio.to_thread(_subscriber_crud, operation, imsi, data, limit, filter)
+    return await asyncio.to_thread(_subscriber_read, imsi)
+
+
+@mcp.tool()
+async def subscriber_list(limit: int = 100, filter: dict | None = None) -> dict:
+    """List subscribers with optional filtering.
+
+    limit:  Max documents to return (1–1000, default 100).
+    filter: Optional equality filter dict. Allowed keys:
+              subscriber_status (0=service_granted, 1=operator_barring)
+              network_access_mode (0=packet_and_circuit, 1=only_packet, 2=only_circuit)
+              access_restriction_data (int)
+              operator_determined_barring (int)
+            Example: {"subscriber_status": 1} to list barred subscribers.
+
+    Returns list of subscriber documents sorted by IMSI, with count.
+    """
+    return await asyncio.to_thread(_subscriber_list, limit, filter)
+
+
+@mcp.tool()
+async def subscriber_create(imsi: str, data: dict | None = None) -> dict:
+    """Create a new subscriber record.
+
+    imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
+    data: Subscriber fields dict (deep-merged with defaults). Example:
+            {
+              "security": {"k": "<Ki>", "opc": "<OPc>", "sqn": 0},
+              "ambr": {"downlink": {"value": 1, "unit": 3}, ...},
+              "msisdn": ["+1234567890"],
+              "slice": [{"sst": 1, "session": [...]}],
+              "subscriber_status": 0,
+              "network_access_mode": 0
+            }
+
+    Returns created subscriber document (secrets redacted).
+    """
+    return await asyncio.to_thread(_subscriber_create, imsi, data)
+
+
+@mcp.tool()
+async def subscriber_delete(imsi: str) -> dict:
+    """Delete a subscriber record by IMSI.
+
+    imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
+
+    Returns {"ok": True, "deleted": bool, "imsi": str}.
+    """
+    return await asyncio.to_thread(_subscriber_delete, imsi)
+
+
+@mcp.tool()
+async def subscriber_update_profile(
+    imsi: str,
+    security: dict | None = None,
+    ambr: dict | None = None,
+    msisdn: list | None = None,
+    imeisv: list | None = None,
+    mme_host: list | None = None,
+    mme_realm: list | None = None,
+    purge_flag: list | None = None,
+    access_restriction_data: int | None = None,
+    subscriber_status: int | None = None,
+    network_access_mode: int | None = None,
+    operator_determined_barring: int | None = None,
+    subscribed_rau_tau_timer: int | None = None,
+) -> dict:
+    """Update subscriber profile parameters (excludes slice/session configuration).
+
+    imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
+
+    Only supplied parameters are updated (deep merge for nested dicts).
+    See subscriber_update_slices to change DNN/slice configuration.
+
+    Returns updated subscriber document (secrets redacted).
+    """
+    return await asyncio.to_thread(
+        _subscriber_update_profile,
+        imsi, security, ambr, msisdn, imeisv, mme_host, mme_realm, purge_flag,
+        access_restriction_data, subscriber_status, network_access_mode,
+        operator_determined_barring, subscribed_rau_tau_timer,
+    )
+
+
+@mcp.tool()
+async def subscriber_update_slices(imsi: str, slices: list) -> dict:
+    """Update subscriber slice and session (DNN) configuration.
+
+    imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
+    slices: Array of slice objects. Each slice must have:
+              sst (int, required): Slice Service Type
+              session (array, required): At least one session with:
+                name (string, required): DNN (Data Network Name) or APN
+                type (int): 1=IPv4, 2=IPv6, 3=IPv4v6
+                qos, arp, ambr, ue, smf, pcc_rule (optional, complex objects)
+            Optional: sd (Slice Differentiator), default_indicator, lbo_roaming_allowed
+
+    The entire slice array is replaced (not merged). To add a second DNN,
+    pass your full desired slice config including existing DNNs.
+
+    Returns updated subscriber document (secrets redacted).
+    """
+    return await asyncio.to_thread(_subscriber_update_slices, imsi, slices)
+
+
+@mcp.tool()
+async def subscriber_repair(imsi: str, action: str = "diagnose") -> dict:
+    """Diagnose and repair corrupted subscriber documents.
+
+    imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
+    action: One of:
+              diagnose (default) — compare against schema defaults, report missing/broken fields
+              restore_defaults — reset to defaults but preserve IMSI + security credentials
+              restore_full — complete reset to defaults (loses all data; use with caution)
+
+    Returns diagnosis with current fields, missing fields, and slice validation results.
+    For restore actions, returns the repaired document.
+    """
+    return await asyncio.to_thread(_subscriber_repair, imsi, action)
 
 
 @mcp.tool()
