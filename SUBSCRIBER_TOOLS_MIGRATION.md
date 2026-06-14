@@ -1,38 +1,47 @@
-# Subscriber Tools Migration: subscriber_crud → 5 Focused Tools
+# Subscriber Tools Migration: subscriber_crud → subscriber + update tools
 
 ## Overview
 
-The `subscriber_crud` tool has been split into 5 focused tools with explicit semantics, better documentation, and clearer parameter intent.
+The old `subscriber_crud` tool has been replaced with three focused tools:
 
-**Why split?**
-- **Clarity**: Each tool has one job with dedicated parameters (no `operation` enum)
-- **Documentation**: Profile-updatable fields are explicitly listed, not hidden in schema docs
-- **Discoverability**: Agents see focused tools instead of one monolithic CRUD
-- **Maintainability**: Future additions (e.g., `subscriber_auth_reset`) slot in naturally
+| Old | New | Notes |
+|-----|-----|-------|
+| `subscriber_crud(operation="read", ...)` | `subscriber(action="read", ...)` | Same semantics |
+| `subscriber_crud(operation="list", ...)` | `subscriber(action="list", ...)` | `count` now reflects total DB docs, not page size |
+| `subscriber_crud(operation="create", ...)` | `subscriber(action="create", ...)` | Same semantics |
+| `subscriber_crud(operation="delete", ...)` | `subscriber(action="delete", ...)` | Same semantics |
+| `subscriber_crud(operation="update", data={"slice": ...})` | `subscriber_update_slices(imsi=..., slices=...)` | Slice array is replaced, not merged |
+| `subscriber_crud(operation="update", data={non-slice fields})` | `subscriber_update_profile(imsi=..., **fields)` | Explicit params per field |
+| `subscriber_repair` | *(removed)* | No longer needed |
 
 ---
 
-## Old → New Mapping
+## Migration Examples
 
-### Old Tool: `subscriber_crud(operation="read", imsi="...")`
+### Read a subscriber
+
 ```python
 # BEFORE
 subscriber_crud(operation="read", imsi="999700000000001")
 
 # AFTER
-subscriber_read(imsi="999700000000001")
+subscriber(action="read", imsi="999700000000001")
 ```
 
-### Old Tool: `subscriber_crud(operation="list", limit=100, filter={...})`
+### List subscribers
+
 ```python
 # BEFORE
 subscriber_crud(operation="list", limit=50, filter={"subscriber_status": 0})
 
 # AFTER
-subscriber_list(limit=50, filter={"subscriber_status": 0})
+subscriber(action="list", limit=50, filter={"subscriber_status": 0})
 ```
 
-### Old Tool: `subscriber_crud(operation="create", imsi="...", data={...})`
+**Note:** The `list` response now includes both `count` (total matching documents in DB) and `returned` (number of documents in this page).
+
+### Create a subscriber
+
 ```python
 # BEFORE
 subscriber_crud(
@@ -42,26 +51,25 @@ subscriber_crud(
 )
 
 # AFTER
-subscriber_create(
+subscriber(
+    action="create",
     imsi="999700000000002",
     data={"security": {"k": "<Ki>", "opc": "<OPc>"}}
 )
 ```
 
-### Old Tool: `subscriber_crud(operation="delete", imsi="...")`
+### Delete a subscriber
+
 ```python
 # BEFORE
 subscriber_crud(operation="delete", imsi="999700000000001")
 
 # AFTER
-subscriber_delete(imsi="999700000000001")
+subscriber(action="delete", imsi="999700000000001")
 ```
 
-### Old Tool: `subscriber_crud(operation="update", imsi="...", data={...})`
+### Update profile parameters (security, AMBR, status, etc.)
 
-This is now split into **two** tools depending on what you're updating:
-
-#### Update Profile Parameters (security, AMBR, status, restrictions, etc.)
 ```python
 # BEFORE
 subscriber_crud(
@@ -81,7 +89,8 @@ subscriber_update_profile(
 )
 ```
 
-#### Update Slice/Session Configuration (DNN names, etc.)
+### Update slice/session (DNN) configuration
+
 ```python
 # BEFORE
 subscriber_crud(
@@ -115,271 +124,69 @@ subscriber_update_slices(
 )
 ```
 
----
-
-## New Tools Reference
-
-### 1. `subscriber_read(imsi: str)`
-Read a single subscriber record.
-
-**Returns:** `{"ok": True, "subscriber": {...}}` or `{"ok": False, "error": "..."}`
-
-**Example:**
-```python
-subscriber_read(imsi="999700000000001")
-```
+**⚠️ Important:** The entire slice array is **replaced**, not merged. Always pass the full desired slice configuration.
 
 ---
 
-### 2. `subscriber_list(limit: int = 100, filter: dict | None = None)`
-List subscribers with optional filtering.
+## Tool Reference
 
-**Filter keys:** `subscriber_status`, `network_access_mode`, `access_restriction_data`, `operator_determined_barring`
+### `subscriber(action, imsi, data, limit, filter)`
 
-**Returns:** `{"ok": True, "subscribers": [...], "count": int}` or `{"ok": False, "error": "..."}`
+Action-dispatched subscriber lifecycle tool.
 
-**Example:**
-```python
-# List all subscribers
-subscriber_list(limit=100)
+- `action` (required): `"read"` | `"list"` | `"create"` | `"delete"`
+- `imsi`: IMSI digits (10-15) or SUPI (`"imsi-<digits>"`). Required for read/create/delete.
+- `data`: For create only. Deep-merged with schema defaults.
+- `limit`: For list only. Max documents (1–1000, default 100).
+- `filter`: For list only. Equality filter — allowed keys: `subscriber_status`, `network_access_mode`, `access_restriction_data`, `operator_determined_barring`
 
-# List barred subscribers
-subscriber_list(filter={"subscriber_status": 1})
-
-# List packet-only subscribers
-subscriber_list(filter={"network_access_mode": 1})
-```
+Returns: `{"ok": True, ...}` or `{"ok": False, "error": str}`
 
 ---
 
-### 3. `subscriber_create(imsi: str, data: dict | None = None)`
-Create a new subscriber record.
+### `subscriber_update_profile(imsi, **fields)`
 
-**Defaults:**
-- AMBR: 1 Gbps down/up
-- Slice: SST=1, default session "internet" (IPv4v6, 5QI=9)
-- subscriber_status: 0 (service_granted)
-- network_access_mode: 0 (packet_and_circuit)
-
-**Returns:** `{"ok": True, "subscriber": {...}}` or `{"ok": False, "error": "..."}`
-
-**Example:**
-```python
-# Minimal: just auth credentials (uses all defaults)
-subscriber_create(
-    imsi="999700000000002",
-    data={"security": {"k": "<Ki>", "opc": "<OPc>"}}
-)
-
-# Full: override defaults
-subscriber_create(
-    imsi="999700000000003",
-    data={
-        "security": {"k": "<Ki>", "opc": "<OPc>", "sqn": 0},
-        "msisdn": ["+1234567890"],
-        "subscriber_status": 1,  # Barred
-        "network_access_mode": 1,  # Packet only
-        "slice": [
-            {
-                "sst": 1,
-                "session": [
-                    {"name": "internet", "type": 3},
-                    {"name": "iotnet", "type": 1}
-                ]
-            }
-        ]
-    }
-)
-```
-
----
-
-### 4. `subscriber_delete(imsi: str)`
-Delete a subscriber record.
-
-**Returns:** `{"ok": True, "deleted": bool, "imsi": str}` or `{"ok": False, "error": "..."}`
-
-**Example:**
-```python
-subscriber_delete(imsi="999700000000001")
-```
-
----
-
-### 5. `subscriber_update_profile(...)`
-Update subscriber profile parameters (everything except slices/sessions).
+Update subscriber profile parameters (everything except slices/sessions). Only supplied fields are updated (deep merge for nested dicts).
 
 **Updatable fields:**
 - `security` (dict): `k`, `opc`, `amf`, `sqn`, `rand`
 - `ambr` (dict): `downlink` / `uplink` with `value` and `unit` (0=bps, 1=Kbps, 2=Mbps, 3=Gbps)
-- `msisdn` (list): Phone numbers, e.g., `["+1234567890"]`
-- `imeisv` (list): Device IDs, e.g., `["12345678901234567"]`
+- `msisdn` (list): Phone numbers
+- `imeisv` (list): Device IDs
 - `mme_host` (list): Legacy MME hostnames
 - `mme_realm` (list): Legacy MME realms
-- `purge_flag` (list): Subscription purge indicators
-- `access_restriction_data` (int): Bitmask (default 32)
+- `purge_flag` (list)
+- `access_restriction_data` (int)
 - `subscriber_status` (int): 0=service_granted, 1=operator_barring
-- `network_access_mode` (int): 0=packet_and_circuit, 1=only_packet, 2=only_circuit
-- `operator_determined_barring` (int): Barring state
-- `subscribed_rau_tau_timer` (int): RAU/TAU timer in minutes
+- `network_access_mode` (int): 0=packet+circuit, 1=packet-only, 2=circuit-only
+- `operator_determined_barring` (int)
+- `subscribed_rau_tau_timer` (int)
 
-**Returns:** `{"ok": True, "subscriber": {...}}` or `{"ok": False, "error": "..."}`
-
-**Examples:**
-```python
-# Update authentication credentials
-subscriber_update_profile(
-    imsi="999700000000001",
-    security={"k": "<new Ki>", "opc": "<new OPc>", "sqn": 150}
-)
-
-# Update AMBR
-subscriber_update_profile(
-    imsi="999700000000001",
-    ambr={"downlink": {"value": 10, "unit": 2}, "uplink": {"value": 5, "unit": 2}}  # 10 Mbps down, 5 Mbps up
-)
-
-# Bar a subscriber
-subscriber_update_profile(
-    imsi="999700000000001",
-    subscriber_status=1
-)
-
-# Update multiple fields
-subscriber_update_profile(
-    imsi="999700000000001",
-    security={"sqn": 200},
-    msisdn=["+9876543210"],
-    network_access_mode=1  # Packet-only
-)
-```
+Returns: `{"ok": True, "subscriber": {...}}` (secrets redacted)
 
 ---
 
-### 6. `subscriber_update_slices(imsi: str, slices: list)`
-Update slice and session (DNN) configuration.
+### `subscriber_update_slices(imsi, slices)`
 
-**Note:** The entire slice array is **replaced**, not merged. Pass your full desired slice config.
+Replace the subscriber's slice array. See [TOOLS.md](TOOLS.md) for the full slice schema.
 
-**Slice object schema:**
-```python
-{
-    "sst": <int>,              # Slice Service Type (required)
-    "sd": "<string>",          # Slice Differentiator (optional)
-    "default_indicator": <bool>,
-    "session": [               # At least one required
-        {
-            "name": "<DNN>",   # Data Network Name (required)
-            "type": <int>,     # 1=IPv4, 2=IPv6, 3=IPv4v6
-            "qos": {
-                "index": <5QI>,
-                "arp": {
-                    "priority_level": <int>,
-                    "pre_emption_capability": <0-1>,
-                    "pre_emption_vulnerability": <0-1>
-                }
-            },
-            "ambr": {...},
-            "ue": {"ipv4": "<IP>", "ipv6": "<IP>"},
-            "smf": {"ipv4": "<IP>", "ipv6": "<IP>"},
-            "pcc_rule": [...],
-            "lbo_roaming_allowed": <bool>
-        }
-    ]
-}
-```
-
-**Returns:** `{"ok": True, "subscriber": {...}}` or `{"ok": False, "error": "..."}`
-
-**Examples:**
-```python
-# Single slice, single DNN
-subscriber_update_slices(
-    imsi="999700000000001",
-    slices=[
-        {
-            "sst": 1,
-            "default_indicator": True,
-            "session": [
-                {"name": "internet", "type": 3}
-            ]
-        }
-    ]
-)
-
-# Single slice, multiple DNNs
-subscriber_update_slices(
-    imsi="999700000000001",
-    slices=[
-        {
-            "sst": 1,
-            "default_indicator": True,
-            "session": [
-                {"name": "internet", "type": 3},
-                {"name": "iotnet", "type": 1},
-                {"name": "enterprise", "type": 2}
-            ]
-        }
-    ]
-)
-
-# Multiple slices (with different SSTAIs)
-subscriber_update_slices(
-    imsi="999700000000001",
-    slices=[
-        {
-            "sst": 1,
-            "sd": "000001",
-            "default_indicator": True,
-            "session": [{"name": "internet", "type": 3}]
-        },
-        {
-            "sst": 128,
-            "sd": "000002",
-            "session": [{"name": "urllc", "type": 3}]
-        }
-    ]
-)
-```
+Returns: `{"ok": True, "subscriber": {...}}` (secrets redacted)
 
 ---
 
-## Implementation Details
+## Shared Utilities (`_subscriber_util.py`)
 
-### Shared Utilities (`_subscriber_util.py`)
 - `normalize_imsi()` — validate and normalize IMSI format
-- `get_subscribers_col()` — MongoDB connection pooling
+- `get_subscribers_col()` — MongoDB connection
 - `serialize()` — convert BSON to JSON-safe types
-- `redact()` — hide `security.k` and `security.opc`
+- `redact()` — hide `security.k` and `security.opc` as `"***"`
 - `deep_merge()` — recursive dict merge for partial updates
-- `DEFAULT_SUBSCRIBER` — sensible schema defaults
-
-### Error Handling
-All tools return structured errors:
-```python
-{"ok": False, "error": "<human-readable error message>"}
-```
-
-### Secrets Redaction
-All returned subscriber documents have `security.k` and `security.opc` replaced with `"***"` for safety in logs/debug output.
-
----
-
-## Backward Compatibility
-
-**The old `subscriber_crud` tool is deprecated** but a backup exists at `subscriber_crud.py.bak` if needed for reference or rollback.
-
-Agents should migrate to the new tools immediately, as they provide:
-- Clearer intent (no guessing about operation)
-- Better documentation (field names in function signature)
-- Easier error diagnosis (operation-specific error messages)
+- `DEFAULT_SUBSCRIBER` — schema defaults for new subscribers
 
 ---
 
 ## Future Additions
 
-The split architecture makes room for:
-- `subscriber_auth_reset(imsi, k, opc, sqn)` — dedicated auth credential update
+- `subscriber_auth_reset(imsi, k, opc, sqn)` — dedicated auth credential update with SQN sync
 - `subscriber_slice_add(imsi, sst, session)` — add a slice without full replace
-- `subscriber_session_add(imsi, sst, session)` — add a DNN to existing slice
-- Role-based access control (e.g., read-only agents get only `subscriber_read` + `subscriber_list`)
+- Role-based access control (e.g., read-only agents get `subscriber(action="read/list")` only)

@@ -9,11 +9,9 @@ Complete documentation of all Open5GS MCP server tools.
 1. [Network Function Lifecycle](#network-function-lifecycle)
 2. [System Health & Diagnostics](#system-health--diagnostics)
 3. [Subscriber Management](#subscriber-management)
-   - [Read Operations](#read-operations)
-   - [Create Operations](#create-operations)
-   - [Delete Operations](#delete-operations)
-   - [Update Operations](#update-operations)
-   - [Repair Operations](#repair-operations)
+   - [subscriber — read/list/create/delete](#subscriber--readlistcreatedelete)
+   - [subscriber_update_profile](#subscriber_update_profile)
+   - [subscriber_update_slices](#subscriber_update_slices)
 4. [UE Session Management](#ue-session-management)
 5. [Configuration & Logs](#configuration--logs)
 6. [RAN & Network State](#ran--network-state)
@@ -136,263 +134,119 @@ system_health_snapshot(log_minutes=240)
 
 ## Subscriber Management
 
-Subscribers are UE profiles stored in MongoDB. The old monolithic `subscriber_crud` tool has been split into focused tools for clarity and safety.
+Subscribers are UE profiles stored in MongoDB. CRUD operations go through the `subscriber` action-dispatch tool; profile and slice updates have dedicated tools.
 
-### Read Operations
+### `subscriber` — read/list/create/delete
 
-#### `subscriber_read`
-
-Read a single subscriber record by IMSI.
+Single tool for all subscriber lifecycle operations. Pass `action` to select the operation.
 
 **Parameters:**
-- `imsi` (string, required): IMSI digits (10-15) or SUPI format ("imsi-<digits>")
+- `action` (string, required): One of `"read"`, `"list"`, `"create"`, `"delete"`
+- `imsi` (string): IMSI digits (10-15) or SUPI format (`"imsi-<digits>"`). Required for read/create/delete.
+- `data` (dict): For `create` only. Subscriber fields deep-merged with defaults.
+- `limit` (int): For `list` only. Max documents to return (1–1000, default 100).
+- `filter` (dict): For `list` only. Equality filter on allowed keys:
+  - `subscriber_status` (0=service_granted, 1=operator_barring)
+  - `network_access_mode` (0=packet_and_circuit, 1=only_packet, 2=only_circuit)
+  - `access_restriction_data` (int)
+  - `operator_determined_barring` (int)
 
 **Returns:**
+
+*read:*
 ```python
 {
     "ok": True,
     "subscriber": {
         "imsi": "999700000000001",
-        "schema_version": 1,
-        "security": {
-            "k": "***",  # redacted
-            "opc": "***",  # redacted
-            "amf": "8000",
-            "sqn": 0
-        },
+        "security": {"k": "***", "opc": "***", "amf": "8000", "sqn": 0},
         "ambr": {
-            "downlink": {"value": 1, "unit": 3},  # 1 Gbps
+            "downlink": {"value": 1, "unit": 3},
             "uplink": {"value": 1, "unit": 3}
         },
         "msisdn": ["+1234567890"],
-        "imeisv": ["12345678901234567"],
         "slice": [...],
-        "access_restriction_data": 32,
         "subscriber_status": 0,
         "network_access_mode": 0,
-        "operator_determined_barring": 0,
-        "subscribed_rau_tau_timer": 12
+        ...
     }
 }
 ```
 
-**Examples:**
-
-```python
-# Read by raw IMSI digits
-subscriber_read(imsi="999700000000001")
-
-# Read by SUPI format
-subscriber_read(imsi="imsi-999700000000001")
-
-# Use in a chain
-sub = subscriber_read(imsi="999700000000001")
-if sub["ok"]:
-    print(f"Subscriber status: {sub['subscriber']['subscriber_status']}")
-```
-
-**Use cases:**
-- Inspect subscriber profile before/after changes
-- Verify security credentials are set
-- Check subscriber status flags (barred, network mode, etc.)
-- Debug registration failures
-
----
-
-#### `subscriber_list`
-
-List subscribers with optional filtering.
-
-**Parameters:**
-- `limit` (int, optional): Max documents to return (1–1000, default 100)
-- `filter` (dict, optional): Equality filter on allowed keys only:
-  - `subscriber_status` (0=service_granted, 1=operator_barring)
-  - `network_access_mode` (0=packet_and_circuit, 1=only_packet, 2=only_circuit)
-  - `access_restriction_data` (int, e.g., 32)
-  - `operator_determined_barring` (int)
-
-**Returns:**
+*list:*
 ```python
 {
     "ok": True,
-    "subscribers": [
-        {
-            "imsi": "999700000000001",
-            "security": {...},
-            "subscriber_status": 0,
-            ...
-        },
-        ...
-    ],
-    "count": 5
+    "subscribers": [...],
+    "count": 42,      # total matching documents in DB
+    "returned": 42    # documents in this page (≤ limit)
 }
 ```
 
-**Examples:**
-
+*create:*
 ```python
-# List all subscribers (up to 100)
-subscriber_list()
-
-# List with limit
-subscriber_list(limit=50)
-
-# Find barred subscribers
-subscriber_list(filter={"subscriber_status": 1})
-
-# Find packet-only subscribers
-subscriber_list(filter={"network_access_mode": 1})
-
-# Find subscribers with specific access restrictions
-subscriber_list(filter={"access_restriction_data": 32}, limit=100)
+{"ok": True, "subscriber": {...}}  # secrets redacted
 ```
 
-**Use cases:**
-- Audit subscriber inventory
-- Find barred subscribers
-- Locate subscribers with specific access modes (4G-only, packet-only)
-- Batch operations (read all, then update)
+*delete:*
+```python
+{"ok": True, "deleted": True, "imsi": "999700000000001"}
+```
 
----
-
-### Create Operations
-
-#### `subscriber_create`
-
-Create a new subscriber record.
-
-**Parameters:**
-- `imsi` (string, required): IMSI digits (10-15) or SUPI format. Must not already exist.
-- `data` (dict, optional): Override defaults. Merged with schema defaults.
-
-**Defaults:**
+**Create defaults:**
 - AMBR: 1 Gbps downlink/uplink
 - Slice: SST=1, default session "internet" (IPv4v6, 5QI=9)
 - subscriber_status: 0 (service_granted)
 - network_access_mode: 0 (packet_and_circuit)
 - access_restriction_data: 32
 
-**Returns:**
-```python
-{
-    "ok": True,
-    "subscriber": {
-        "imsi": "999700000000002",
-        "security": {...},
-        "slice": [...],
-        ...
-    }
-}
-```
-
 **Examples:**
 
 ```python
-# Minimal: just auth credentials (uses all defaults)
-subscriber_create(
-    imsi="999700000000002",
-    data={"security": {"k": "<Ki>", "opc": "<OPc>"}}
-)
+# Read a subscriber
+subscriber(action="read", imsi="999700000000001")
 
-# With MSISDN
-subscriber_create(
-    imsi="999700000000003",
+# Read by SUPI format
+subscriber(action="read", imsi="imsi-999700000000001")
+
+# List all subscribers (up to 100)
+subscriber(action="list")
+
+# Find barred subscribers
+subscriber(action="list", filter={"subscriber_status": 1})
+
+# Find packet-only subscribers with a custom limit
+subscriber(action="list", filter={"network_access_mode": 1}, limit=50)
+
+# Create with minimal credentials (all defaults apply)
+subscriber(action="create", imsi="999700000000002",
+    data={"security": {"k": "<Ki>", "opc": "<OPc>"}})
+
+# Create with MSISDN override
+subscriber(action="create", imsi="999700000000003",
     data={
         "security": {"k": "<Ki>", "opc": "<OPc>"},
-        "msisdn": ["+1234567890"]
-    }
-)
-
-# Full customization
-subscriber_create(
-    imsi="999700000000004",
-    data={
-        "security": {
-            "k": "<Ki>",
-            "opc": "<OPc>",
-            "amf": "8000",
-            "sqn": 0
-        },
         "msisdn": ["+1234567890"],
-        "subscriber_status": 1,  # Barred
-        "network_access_mode": 1,  # Packet only
+        "subscriber_status": 1,    # Barred
         "ambr": {
             "downlink": {"value": 10, "unit": 2},  # 10 Mbps
-            "uplink": {"value": 5, "unit": 2}  # 5 Mbps
-        },
-        "slice": [
-            {
-                "sst": 1,
-                "default_indicator": True,
-                "session": [
-                    {
-                        "name": "internet",
-                        "type": 3,
-                        "qos": {"index": 9, "arp": {...}},
-                        "ambr": {...},
-                        "pcc_rule": []
-                    }
-                ]
-            }
-        ]
-    }
-)
-```
+            "uplink": {"value": 5, "unit": 2}
+        }
+    })
 
-**Use cases:**
-- Provision test SIMs
-- Bulk import subscriber data
-- Set up subscribers with specific AMBR limits
-- Create multi-slice subscribers
-
----
-
-### Delete Operations
-
-#### `subscriber_delete`
-
-Delete a subscriber record by IMSI.
-
-**Parameters:**
-- `imsi` (string, required): IMSI digits (10-15) or SUPI format
-
-**Returns:**
-```python
-{
-    "ok": True,
-    "deleted": True,  # False if subscriber didn't exist
-    "imsi": "999700000000001"
-}
-```
-
-**Examples:**
-
-```python
 # Delete a subscriber
-result = subscriber_delete(imsi="999700000000001")
-if result["deleted"]:
-    print("Subscriber deleted")
-else:
-    print("Subscriber did not exist")
-
-# Bulk delete (with error handling)
-imsis_to_delete = ["999700000000001", "999700000000002"]
-for imsi in imsis_to_delete:
-    result = subscriber_delete(imsi=imsi)
-    print(f"{imsi}: {'deleted' if result['deleted'] else 'not found'}")
+subscriber(action="delete", imsi="999700000000001")
 ```
 
 **Use cases:**
-- Clean up test subscribers
-- Remove duplicate entries
-- Decommission subscriber accounts
-- Bulk cleanup of expired test data
+- Provision / deprovision test SIMs
+- Audit subscriber inventory
+- Find barred or restricted subscribers
+- Inspect subscriber profile before applying updates
 
 ---
 
-### Update Operations
-
-#### `subscriber_update_profile`
+### `subscriber_update_profile`
 
 Update subscriber profile parameters (non-slice fields).
 
@@ -494,7 +348,7 @@ subscriber_update_profile(
 
 ---
 
-#### `subscriber_update_slices`
+### `subscriber_update_slices`
 
 Update slice and session (DNN) configuration.
 
@@ -642,7 +496,7 @@ subscriber_update_slices(
 )
 
 # Safe workflow: read first, modify, apply
-current = subscriber_read(imsi="999700000000001")
+current = subscriber(action="read", imsi="999700000000001")
 slices = current["subscriber"]["slice"]
 # Modify slices locally
 slices[0]["session"].append({
@@ -1108,8 +962,8 @@ for nf, stats in by_cpu[:3]:
 
 ### Subscriber Provisioning Workflow
 
-1. **Create subscriber** — `subscriber_create(imsi="...", data={...})`
-2. **Verify creation** — `subscriber_read(imsi="...")`
+1. **Create subscriber** — `subscriber(action="create", imsi="...", data={...})`
+2. **Verify creation** — `subscriber(action="read", imsi="...")`
 3. **Update profile if needed** — `subscriber_update_profile(imsi="...", ...)`
 4. **Add/modify DNNs** — `subscriber_update_slices(imsi="...", slices=[...])`
 5. **Verify in WebUI** — http://localhost:9999
@@ -1132,7 +986,7 @@ All tools return structured responses:
 
 Always check `ok` before using tool results:
 ```python
-result = subscriber_read(imsi="999700000000001")
+result = subscriber(action="read", imsi="999700000000001")
 if result["ok"]:
     print(result["subscriber"]["subscriber_status"])
 else:
