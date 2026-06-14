@@ -33,9 +33,7 @@ NRF SBI: http://localhost:7777
 ## MCP tools — built
 - nf_lifecycle              — start/stop/restart/status any NF
 - system_health_snapshot    — full health check in one call
-- subscriber_read           — read a single subscriber or list with filters
-- subscriber_create         — create new subscriber with defaults
-- subscriber_delete         — delete subscriber by IMSI
+- subscriber               — read/list/create/delete subscribers (action-dispatched)
 - subscriber_update_profile — update profile params (security, AMBR, status, restrictions)
 - subscriber_update_slices  — update slice/session (DNN) configuration
 - list_ue_sessions          — active UE contexts and PDU sessions (AMF+SMF join)
