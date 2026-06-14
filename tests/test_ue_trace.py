@@ -279,3 +279,38 @@ class TestGetUETrace:
         result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
         assert result["ok"] is True
         assert result["summary"]["registration_success"] is False
+
+    @patch("tools.ue_trace._read_log_tail")
+    def test_pre_auth_lines_captured_when_supi_absent(self, mock_read):
+        """Real Open5GS logs: SUPI only appears from Security Mode Command onward.
+
+        Registration Request and Authentication Request/Response lines don't contain
+        the SUPI because the AMF only learns it after AUSF/UDM decrypts the SUCI.
+        _search_amf_pre_auth must find them via message-pattern matching even when
+        ngap_ids is empty.
+        """
+        amf_log_real_format = (
+            f"{_D} 10:00:00.100: [amf] DEBUG: [InitialUEMessage] RAN_UE_NGAP_ID[1]\n"
+            f"{_D} 10:00:00.110: [amf] DEBUG: Registration Request (nr-gnb.c:123)\n"
+            f"{_D} 10:00:00.200: [amf] DEBUG: Authentication Request (amf-sm.c:456)\n"
+            f"{_D} 10:00:00.300: [amf] DEBUG: Authentication Response (amf-sm.c:457)\n"
+            # SUPI first appears here
+            f"{_D} 10:00:00.400: [amf] DEBUG: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
+            f"{_D} 10:00:00.500: [amf] DEBUG: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
+            f"{_D} 10:00:00.600: [amf] DEBUG: [999700000000001] Registration Accept (amf-sm.c:600)\n"
+        )
+
+        def realistic_log(nf: str):
+            if nf == "amf":
+                return amf_log_real_format, None
+            return _fake_log(nf)
+
+        mock_read.side_effect = realistic_log
+        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        assert result["ok"] is True
+        msg_types = [e["message_type"] for e in result["events"]]
+        assert "Registration Request" in msg_types, "Registration Request missing from pre-auth phase"
+        assert "Authentication Request" in msg_types, "Authentication Request missing from pre-auth phase"
+        assert "Authentication Response" in msg_types, "Authentication Response missing from pre-auth phase"
+        assert "Security Mode Command" in msg_types
+        assert "Registration Accept" in msg_types
