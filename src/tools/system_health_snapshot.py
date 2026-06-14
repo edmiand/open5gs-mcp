@@ -3,19 +3,10 @@
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import httpx
-import yaml
 
-from tools.nf_lifecycle import _SCRIPT
-
-# ── paths ──────────────────────────────────────────────────────────────────────
-
-_INSTALL = _SCRIPT.parent / "install"
-_LOG_DIR = _INSTALL / "var" / "log" / "open5gs"
-_RUN_DIR = _INSTALL / "var" / "run" / "open5gs"
-_CONFIG_DIR = _INSTALL / "etc" / "open5gs"
+from tools._nf_util import LOG_DIR as _LOG_DIR, RUN_DIR as _RUN_DIR, metrics_url as _metrics_url
 
 # NFs that expose subscriber-relevant HTTP info endpoints
 _NF_INFO_ENDPOINTS: dict[str, str] = {
@@ -89,7 +80,7 @@ def _parse_log_ts(token: str, year: int, now_md: tuple[int, int]) -> datetime | 
         # If the log date is in the future (e.g. 12/31 read on 01/02), use prior year
         now_m, now_d = now_md
         log_m, log_d = dt.month, dt.day
-        if (log_m, log_d) > (now_m, now_d + 1):
+        if (log_m, log_d) > (now_m, now_d):
             dt = dt.replace(year=year - 1)
         return dt
     except ValueError:
@@ -179,18 +170,6 @@ def _check_ran() -> dict:
 
 
 # ── NF info endpoint probes ────────────────────────────────────────────────────
-
-def _metrics_url(nf: str) -> str:
-    try:
-        cfg_path = _CONFIG_DIR / f"{nf}.yaml"
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f)
-        srv = cfg[nf]["metrics"]["server"][0]
-        return f"http://{srv['address']}:{srv['port']}"
-    except Exception:
-        defaults = {"amf": "http://127.0.0.5:9090", "smf": "http://127.0.0.4:9090"}
-        return defaults.get(nf, "http://127.0.0.1:9090")
-
 
 def _probe_nf_endpoint(nf: str) -> str:
     """Return 'ok' if the NF info endpoint responds, 'unreachable' otherwise."""

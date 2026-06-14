@@ -2,24 +2,11 @@
 
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from tools.nf_lifecycle import _SCRIPT
-
-_LOG_DIR = _SCRIPT.parent / "install" / "var" / "log" / "open5gs"
+from tools._log_util import _LINE_RE, _ANSI_RE, _SOURCE_RE, parse_log_ts
+from tools._nf_util import LOG_DIR as _LOG_DIR
 
 _ALL_NFS = ["nrf", "scp", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "webui"]
-
-# Log line: optional ANSI + timestamp: [component] LEVEL: message
-_LINE_RE = re.compile(
-    r"^(?:\x1b\[[0-9;]*m)?"
-    r"(\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+)"   # group 1: MM/DD HH:MM:SS.mmm
-    r":\s+\[(\w+)\]"                             # group 2: component
-    r"\s+(\w+)"                                  # group 3: LEVEL
-    r":\s+(.+?)$"                                # group 4: message
-)
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-_SOURCE_RE = re.compile(r"\(([^)]+:\d+)\)$")   # (file:line) at end of message
 
 # Level hierarchy (higher index = higher severity)
 _LEVELS = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "WARN": 2, "ERROR": 3, "CRIT": 4, "FATAL": 5}
@@ -62,21 +49,6 @@ def _parse_since(since: str | None) -> datetime | None:
     raise ValueError(f"Cannot parse since='{since}'. Use e.g. '15m', '1h', '2026-06-03T20:00:00'.")
 
 
-def _parse_ts(ts_str: str, year: int) -> datetime | None:
-    """Parse 'MM/DD HH:MM:SS.mmm' into a timezone-aware datetime."""
-    try:
-        dt = datetime.strptime(f"{year}/{ts_str}", "%Y/%m/%d %H:%M:%S.%f")
-    except ValueError:
-        try:
-            dt = datetime.strptime(f"{year}/{ts_str}", "%Y/%m/%d %H:%M:%S")
-        except ValueError:
-            return None
-    # Handle year-rollover (log in Dec read in Jan)
-    if dt > datetime.now():
-        dt = dt.replace(year=year - 1)
-    return dt.replace(tzinfo=timezone.utc)
-
-
 def _min_level_int(level_filter: str) -> int:
     canonical = _LEVEL_ALIASES.get(level_filter.lower(), level_filter.upper())
     return _LEVELS.get(canonical, 0)
@@ -89,7 +61,7 @@ def _parse_line(raw: str, year: int) -> dict | None:
     if not m:
         return None
     ts_str, component, level, message = m.group(1), m.group(2), m.group(3), m.group(4)
-    ts = _parse_ts(ts_str, year)
+    ts = parse_log_ts(ts_str, year)
     if ts is None:
         return None
 

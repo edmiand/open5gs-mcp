@@ -2,24 +2,13 @@
 
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from tools.nf_lifecycle import _SCRIPT
-
-_LOG_DIR = _SCRIPT.parent / "install" / "var" / "log" / "open5gs"
+from tools._log_util import _LINE_RE, _ANSI_RE, _SOURCE_RE, parse_log_ts
+from tools._nf_util import LOG_DIR as _LOG_DIR
+from tools._subscriber_util import normalize_supi as _normalize_supi_fn
 
 # NRF excluded — its logs contain NF-lifecycle events, not per-UE signaling (Fix 3)
 _TRACE_NFS = ["amf", "ausf", "udm", "udr", "smf", "pcf", "upf"]
-
-_LINE_RE = re.compile(
-    r"^(?:\x1b\[[0-9;]*m)?"
-    r"(\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+)"
-    r":\s+\[(\w+)\]"
-    r"\s+(\w+)"
-    r":\s+(.+?)$"
-)
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-_SOURCE_RE = re.compile(r"\(([^)]+:\d+)\)$")
 
 # 10 MB: AMF/SMF run at debug level and generate 5-15x more volume than info (Fix 4)
 _TAIL_BYTES = 10 * 1024 * 1024
@@ -104,44 +93,13 @@ _DEFAULT_PARTICIPANTS = ["UE", "gNB", "AMF", "AUSF", "UDM", "UDR", "SMF", "UPF",
 
 # ── low-level helpers ──────────────────────────────────────────────────────────
 
-def _normalize_supi(supi: str) -> tuple[str, str]:
-    """Return (full_supi, bare_imsi_digits).
-
-    Accepts: "imsi-999700000000001", "999700000000001", "IMSI:999700000000001"
-    """
-    s = supi.strip()
-    if re.match(r"(?i)imsi[-:]", s):
-        digits = re.sub(r"(?i)^imsi[-:]", "", s).strip()
-    else:
-        digits = s
-
-    if not re.match(r"^\d{10,15}$", digits):
-        raise ValueError(f"Invalid SUPI/IMSI '{supi}': expected 10-15 digits after prefix")
-
-    return f"imsi-{digits}", digits
-
-
-def _parse_ts_str(ts_str: str, year: int) -> datetime | None:
-    """Parse 'MM/DD HH:MM:SS.mmm' into UTC datetime."""
-    try:
-        dt = datetime.strptime(f"{year}/{ts_str}", "%Y/%m/%d %H:%M:%S.%f")
-    except ValueError:
-        try:
-            dt = datetime.strptime(f"{year}/{ts_str}", "%Y/%m/%d %H:%M:%S")
-        except ValueError:
-            return None
-    if dt > datetime.now():
-        dt = dt.replace(year=year - 1)
-    return dt.replace(tzinfo=timezone.utc)
-
-
 def _parse_line(raw: str, year: int) -> dict | None:
     clean = _ANSI_RE.sub("", raw).rstrip()
     m = _LINE_RE.match(clean)
     if not m:
         return None
     ts_str, component, level, message = m.group(1), m.group(2), m.group(3), m.group(4)
-    ts = _parse_ts_str(ts_str, year)
+    ts = parse_log_ts(ts_str, year)
     if ts is None:
         return None
     src_m = _SOURCE_RE.search(message)
@@ -415,7 +373,7 @@ def get_ue_trace(
     """
     # ── input validation ──────────────────────────────────────────────────────
     try:
-        full_supi, bare_imsi = _normalize_supi(supi)
+        full_supi, bare_imsi = _normalize_supi_fn(supi)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 

@@ -20,6 +20,22 @@ def normalize_imsi(raw: str) -> str | None:
 	return s if _IMSI_RE.match(s) else None
 
 
+def normalize_supi(raw: str) -> tuple[str, str]:
+	"""Return (full_supi, bare_imsi_digits).
+
+	Accepts: '999700000000001', 'imsi-999700000000001', 'IMSI:999700000000001'
+	Raises ValueError on invalid format.
+	"""
+	s = raw.strip()
+	if re.match(r"(?i)imsi[-:]", s):
+		digits = re.sub(r"(?i)^imsi[-:]", "", s).strip()
+	else:
+		digits = s
+	if not _IMSI_RE.match(digits):
+		raise ValueError(f"Invalid SUPI/IMSI '{raw}': expected 10-15 digits after prefix")
+	return f"imsi-{digits}", digits
+
+
 def get_subscribers_col():
 	"""Get MongoDB subscribers collection; raises on connection failure."""
 	return MongoClient(_MONGO_URI, serverSelectionTimeoutMS=3000)[_DB][_COL]

@@ -1,30 +1,11 @@
 """list_ue_sessions — query live UE registrations and PDU sessions from AMF and SMF."""
 
-from pathlib import Path
+from datetime import datetime, timezone
 
 import httpx
-import yaml
 
-_CONFIG_DIR = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "open5gs" / "install" / "etc" / "open5gs"
-)
-
-
-# ── config helpers ─────────────────────────────────────────────────────────────
-
-def _metrics_url(nf: str) -> str:
-    """Read metrics address and port from the NF YAML config."""
-    try:
-        cfg_path = _CONFIG_DIR / f"{nf}.yaml"
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f)
-        srv = cfg[nf]["metrics"]["server"][0]
-        return f"http://{srv['address']}:{srv['port']}"
-    except Exception:
-        # Fallback to known defaults
-        defaults = {"amf": "http://127.0.0.5:9090", "smf": "http://127.0.0.4:9090"}
-        return defaults.get(nf, f"http://127.0.0.1:9090")
+from tools._nf_util import metrics_url as _metrics_url
+from tools._subscriber_util import normalize_imsi as _normalize_imsi
 
 
 # ── data fetchers ──────────────────────────────────────────────────────────────
@@ -177,8 +158,6 @@ def list_ue_sessions(
           "sources": {"amf": "ok"|"unreachable"|"timeout"|"error", "smf": str}
         }
     """
-    from datetime import datetime, timezone
-
     amf_base = _metrics_url("amf")
     smf_base = _metrics_url("smf")
 
@@ -189,10 +168,13 @@ def list_ue_sessions(
     # Index SMF sessions by SUPI for O(1) join
     smf_by_supi: dict[str, dict] = {u["supi"]: u for u in smf_items if "supi" in u}
 
-    # Normalise filter
+    # Validate and normalise IMSI filter
     filter_norm: str | None = None
     if imsi_filter:
-        filter_norm = imsi_filter.strip().lower().removeprefix("imsi-")
+        stripped = imsi_filter.strip().lower().removeprefix("imsi-")
+        if not stripped.isdigit():
+            return {"ok": False, "error": f"Invalid imsi_filter '{imsi_filter}': must be digits or 'imsi-<digits>'"}
+        filter_norm = stripped
 
     ues: list[dict] = []
     for amf_ue in amf_items:
