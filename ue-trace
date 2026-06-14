@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ue-trace — call get_ue_trace on the running MCP server
+#
+# Usage: ue-trace <supi> [time_window_minutes]
+# Examples:
+#   ue-trace imsi-999700000000001
+#   ue-trace imsi-999700000000001 30
+#   ue-trace 999700000000001 60
+
+set -euo pipefail
+
+MCP_URL="${MCP_URL:-http://localhost:8080/mcp}"
+
+usage() {
+    echo "Usage: ue-trace <supi> [time_window_minutes]"
+    echo "  supi                  IMSI/SUPI (with or without 'imsi-' prefix)"
+    echo "  time_window_minutes   How far back to search (default: 60)"
+    exit 1
+}
+
+[[ $# -lt 1 || "$1" == "--help" || "$1" == "-h" ]] && usage
+
+SUPI="$1"
+WINDOW="${2:-60}"
+
+# Initialize session
+SESSION=$(curl -s -X POST "$MCP_URL" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ue-trace","version":"1.0"}}}' \
+    -D - 2>/dev/null \
+    | grep -i "mcp-session-id" | awk '{print $2}' | tr -d '\r')
+
+if [[ -z "$SESSION" ]]; then
+    echo "ERROR: could not connect to MCP server at $MCP_URL" >&2
+    exit 1
+fi
+
+# Call tool and pretty-print result
+curl -s -X POST "$MCP_URL" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "mcp-session-id: $SESSION" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_ue_trace\",\"arguments\":{\"supi\":\"$SUPI\",\"time_window_minutes\":$WINDOW}}}" \
+    | grep '^data:' \
+    | sed 's/^data: //' \
+    | python3 -c "
+import sys, json
+outer = json.load(sys.stdin)
+text = outer['result']['content'][0]['text']
+data = json.loads(text)
+print(json.dumps(data, indent=2))
+"
