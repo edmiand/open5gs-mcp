@@ -31,12 +31,15 @@ _SUPI_OPT = r"(?:\[imsi-\d+\]\s+)?"
 # (compiled pattern, message_type, from_entity, to_entity)
 # None from/to → filled from NF context at call time
 _MSG_RULES: list[tuple[re.Pattern, str, str | None, str | None]] = [
+    # Deregistration rules must come before Registration rules — "Deregistration"
+    # contains "Registration" as a substring, so the order prevents false matches.
+    (re.compile(r"De.?registration Request.*AMF", re.I),      "Deregistration Request",            "AMF",  "UE"),
+    (re.compile(r"De.?registration Request", re.I),           "Deregistration Request",            "UE",   "AMF"),
+    (re.compile(r"De.?registration Accept", re.I),            "Deregistration Accept",             "AMF",  "UE"),
     (re.compile(r"Registration Request", re.I),               "Registration Request",              "UE",   "AMF"),
     (re.compile(r"Registration Accept", re.I),                "Registration Accept",               "AMF",  "UE"),
     (re.compile(r"Registration Complete", re.I),              "Registration Complete",             "UE",   "AMF"),
     (re.compile(r"Registration Reject", re.I),                "Registration Reject",               "AMF",  "UE"),
-    (re.compile(r"Deregistration Request.*UE", re.I),         "Deregistration Request",            "UE",   "AMF"),
-    (re.compile(r"Deregistration Request.*AMF", re.I),        "Deregistration Request",            "AMF",  "UE"),
     (re.compile(r"\bAuthentication Request", re.I),           "Authentication Request",            "AMF",  "UE"),
     (re.compile(r"\bAuthentication Response", re.I),          "Authentication Response",           "UE",   "AMF"),
     (re.compile(r"\bAuthentication Failure", re.I),           "Authentication Failure",            "UE",   "AMF"),
@@ -512,15 +515,16 @@ def get_ue_trace(
     all_events.sort(key=lambda e: e["_sort_ts"])
 
     # ── Step 5: build summary and output ──────────────────────────────────────
-    registration_success = any(
-        "Registration Accept" in e["message_type"] for e in all_events
-    )
-    pdu_session_success = any(
-        "PDU Session Establishment Accept" in e["message_type"] for e in all_events
-    )
-
     ue_ips = list(nf_data.get("smf", {}).get("ue_ips", []))
     ue_ip_assigned = ue_ips[0] if ue_ips else None
+
+    registration_success = any(
+        e["message_type"] == "Registration Accept" for e in all_events
+    )
+    pdu_session_success = (
+        any("PDU Session Establishment Accept" in e["message_type"] for e in all_events)
+        or ue_ip_assigned is not None
+    )
 
     error_lines = [
         e["message"] for e in all_events
