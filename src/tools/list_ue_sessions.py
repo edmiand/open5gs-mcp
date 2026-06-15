@@ -43,13 +43,6 @@ def _fetch_all_pages(base_url: str, path: str, page_size: int = 100) -> tuple[li
     return items, "ok"
 
 
-# ── normalisation ──────────────────────────────────────────────────────────────
-
-def _imsi(supi: str) -> str:
-    """Extract IMSI digits from 'imsi-<digits>' or return as-is."""
-    return supi.removeprefix("imsi-") if supi else supi
-
-
 def _merge_sessions(amf_ue: dict, smf_by_supi: dict) -> list[dict]:
     """
     Merge AMF PDU session stubs with SMF PDU session detail (keyed by PSI).
@@ -171,15 +164,14 @@ def list_ue_sessions(
     # Validate and normalise IMSI filter
     filter_norm: str | None = None
     if imsi_filter:
-        stripped = imsi_filter.strip().lower().removeprefix("imsi-")
-        if not stripped.isdigit():
+        filter_norm = _normalize_imsi(imsi_filter)
+        if filter_norm is None:
             return {"ok": False, "error": f"Invalid imsi_filter '{imsi_filter}': must be digits or 'imsi-<digits>'"}
-        filter_norm = stripped
 
     ues: list[dict] = []
     for amf_ue in amf_items:
         supi = amf_ue.get("supi", "")
-        imsi = _imsi(supi)
+        imsi = supi.removeprefix("imsi-")
 
         # Apply IMSI filter
         if filter_norm and not imsi.startswith(filter_norm):

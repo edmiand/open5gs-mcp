@@ -23,12 +23,17 @@ cat <<'HELP'
     MCP_URL           MCP server base URL  (default: http://localhost:8080/mcp)
                       Can also be set via the MCP_URL environment variable.
 
+  ENVIRONMENT
+    MCP_URL           MCP server base URL (default: http://localhost:8080/mcp)
+    MCP_AUTH_TOKEN    Bearer token — required when server has auth_enabled=true
+
   EXAMPLES
     mcp-curl                               List all tools (table view)
     mcp-curl --tool nf_lifecycle           Full detail for a single tool
     mcp-curl --schema subscriber_crud      Raw JSON schema for a tool
     mcp-curl http://10.0.0.1:8080/mcp      Connect to a remote server
     MCP_URL=http://10.0.0.1:8080/mcp mcp-curl --tool subscriber_crud
+    MCP_AUTH_TOKEN=mytoken mcp-curl        Connect to auth-enabled server
 
 HELP
 }
@@ -51,14 +56,26 @@ done
 
 MCP_URL="${POSITIONAL[0]:-${MCP_URL:-http://localhost:8080/mcp}}"
 
+# ── auth header (Layer 2: set MCP_AUTH_TOKEN env var when server auth is on) ──
+
+CURL_AUTH=()
+if [[ -n "${MCP_AUTH_TOKEN:-}" ]]; then
+    CURL_AUTH=(-H "Authorization: Bearer ${MCP_AUTH_TOKEN}")
+fi
+
 # ── handshake ──────────────────────────────────────────────────────────────────
 
 INIT=$(curl -si -X POST "$MCP_URL" \
+    "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mcp-curl","version":"1"}}}')
 
 HTTP_STATUS=$(echo "$INIT" | head -1 | grep -oP '\d{3}' | head -1 || true)
+if [[ $HTTP_STATUS == "401" ]]; then
+    echo "ERROR: server returned 401 — set MCP_AUTH_TOKEN env var with the bearer token." >&2
+    exit 1
+fi
 if [[ $HTTP_STATUS == "404" ]]; then
     echo "ERROR: server at $MCP_URL returned 404 — is it running?" >&2
     exit 1
@@ -72,6 +89,7 @@ fi
 
 # Send initialized notification
 curl -s -X POST "$MCP_URL" \
+    "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "Mcp-Session-Id: $SESSION" \
@@ -81,6 +99,7 @@ curl -s -X POST "$MCP_URL" \
 
 BODY=$(mktemp)
 curl -s -X POST "$MCP_URL" \
+    "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "Mcp-Session-Id: $SESSION" \

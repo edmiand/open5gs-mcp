@@ -1,5 +1,7 @@
-"""Shared NF path constants and metrics URL resolution."""
+"""Shared NF path constants, metrics URL resolution, and NF process detection."""
 
+import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -23,6 +25,51 @@ _METRICS_DEFAULTS: dict[str, str] = {
     "nrf":  "http://127.0.0.10:9090",
     "scp":  "http://127.0.0.200:9090",
 }
+
+
+def _pid_alive(pid: int) -> bool:
+    return Path(f"/proc/{pid}").is_dir()
+
+
+def get_nf_pid(nf: str) -> int | None:
+    """Return the PID of a running NF process, or None if not running."""
+    pidfile = RUN_DIR / f"{nf}.pid"
+    if pidfile.exists():
+        try:
+            pid = int(pidfile.read_text().strip())
+            if _pid_alive(pid):
+                return pid
+        except (ValueError, OSError):
+            pass
+
+    if nf != "webui":
+        try:
+            r = subprocess.run(
+                ["pgrep", f"open5gs-{nf}d"],
+                capture_output=True, text=True, timeout=3,
+            )
+            for tok in r.stdout.split():
+                pid = int(tok)
+                if _pid_alive(pid):
+                    return pid
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            pass
+        return None
+
+    # webui: node process listening on port 9999
+    try:
+        r = subprocess.run(
+            ["ss", "-tlnp", "sport", "=", ":9999"],
+            capture_output=True, text=True, timeout=3,
+        )
+        m = re.search(r"pid=(\d+)", r.stdout)
+        if m:
+            pid = int(m.group(1))
+            if _pid_alive(pid):
+                return pid
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
 
 
 def metrics_url(nf: str) -> str:

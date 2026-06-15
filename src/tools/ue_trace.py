@@ -3,7 +3,7 @@
 import re
 from datetime import datetime, timedelta, timezone
 
-from tools._log_util import _LINE_RE, _ANSI_RE, _SOURCE_RE, parse_log_ts
+from tools._log_util import _ANSI_RE, _parse_line
 from tools._nf_util import LOG_DIR as _LOG_DIR
 from tools._subscriber_util import normalize_supi as _normalize_supi_fn
 
@@ -97,29 +97,6 @@ _DEFAULT_PARTICIPANTS = ["UE", "gNB", "AMF", "AUSF", "UDM", "UDR", "SMF", "UPF",
 
 
 # ── low-level helpers ──────────────────────────────────────────────────────────
-
-def _parse_line(raw: str, year: int) -> dict | None:
-    clean = _ANSI_RE.sub("", raw).rstrip()
-    m = _LINE_RE.match(clean)
-    if not m:
-        return None
-    ts_str, component, level, message = m.group(1), m.group(2), m.group(3), m.group(4)
-    ts = parse_log_ts(ts_str, year)
-    if ts is None:
-        return None
-    src_m = _SOURCE_RE.search(message)
-    source = src_m.group(1) if src_m else None
-    if source:
-        message = message[: src_m.start()].rstrip()
-    return {
-        "ts": ts,
-        "ts_str": ts_str,
-        "component": component,
-        "level": level.upper(),
-        "message": message.strip(),
-        "source": source,
-    }
-
 
 def _read_log_tail(nf: str) -> tuple[str | None, str | None]:
     """Read the tail of an NF log file. Returns (text, error_msg)."""

@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 
 import psutil
 
-from tools.system_health_snapshot import _NFS, _get_nf_pid
+from tools._nf_util import get_nf_pid as _get_nf_pid
 from tools.nf_lifecycle import VALID_NFS
+from tools.system_health_snapshot import _NFS
 
 _VALID_MONITOR_NFS = frozenset(VALID_NFS)
 
