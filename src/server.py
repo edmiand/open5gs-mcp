@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import Literal
@@ -470,10 +471,15 @@ if __name__ == "__main__":
                 await _combined_lifespan_app(scope, receive, send)
                 return
             path = scope.get("path", "")
-            if path.startswith("/mcp"):
-                await _http_app(scope, receive, send)
-            else:
-                await _sse_app(scope, receive, send)
+            target = _http_app if path.startswith("/mcp") else _sse_app
+            try:
+                await target(scope, receive, send)
+            except Exception:
+                # A broken SSE connection must not crash the whole server.
+                # Uvicorn treats an unhandled exception from run_asgi() as fatal
+                # (sets should_exit=True), so we catch here and let it log the
+                # traceback without propagating.
+                logging.exception("Unhandled ASGI error on %s (connection dropped)", path)
 
         _combined_lifespan_app = Starlette(lifespan=_combined_lifespan)
 
