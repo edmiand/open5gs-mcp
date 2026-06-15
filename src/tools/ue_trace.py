@@ -164,6 +164,7 @@ def _search_amf_log(bare_imsi: str, time_window_minutes: int) -> dict:
     cutoff_ts = datetime.now(timezone.utc) - timedelta(minutes=time_window_minutes)
 
     lines = text.splitlines()
+    seen_raws: set[str] = set()
 
     # Find the earliest timestamp in the tail for log-coverage warnings (Fix 4)
     for raw_line in lines:
@@ -181,12 +182,18 @@ def _search_amf_log(bare_imsi: str, time_window_minutes: int) -> dict:
         if rec["ts"] < cutoff_ts:
             continue
 
+        # Open5GS writes each line twice (ANSI + plain); deduplicate by stripped text
+        raw_clean = _ANSI_RE.sub("", raw_line).rstrip()
+        if raw_clean in seen_raws:
+            continue
+        seen_raws.add(raw_clean)
+
         result["lines"].append({
             "ts": rec["ts"],
             "ts_str": rec["ts_str"],
             "level": rec["level"],
             "message": rec["message"],
-            "raw": _ANSI_RE.sub("", raw_line).rstrip(),
+            "raw": raw_clean,
         })
 
         if result["first_ts"] is None or rec["ts"] < result["first_ts"]:
