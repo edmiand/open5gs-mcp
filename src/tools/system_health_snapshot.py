@@ -1,13 +1,13 @@
 """system_health_snapshot — one-shot health check of the Open5GS 5G core."""
 
-import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 
-from tools._nf_util import LOG_DIR as _LOG_DIR, RUN_DIR as _RUN_DIR, metrics_url as _metrics_url
+from tools._nf_util import get_nf_pid as _get_nf_pid, metrics_url as _metrics_url
+from tools.tail_nf_logs import _read_nf_log
 
 # NFs that expose subscriber-relevant HTTP info endpoints
 _NF_INFO_ENDPOINTS: dict[str, str] = {
@@ -18,106 +18,8 @@ _NF_INFO_ENDPOINTS: dict[str, str] = {
 # Startup dependency order (matches open5gs-ctl.sh)
 _NFS = ["nrf", "scp", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "webui"]
 
-# Log line: optional ANSI prefix + MM/DD HH:MM:SS
-_TS_RE = re.compile(r"^(?:\x1b\[[0-9;]*m)?(\d{2}/\d{2} \d{2}:\d{2}:\d{2})")
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-# Open5GS error levels
-_ERR_RE = re.compile(r"\b(?:ERROR|CRIT|FATAL|WARNING)\b")
-
-# ── NF process detection ───────────────────────────────────────────────────────
-
-def _pid_alive(pid: int) -> bool:
-    return Path(f"/proc/{pid}").is_dir()
-
-
-def _get_nf_pid(nf: str) -> int | None:
-    # 1. pidfile
-    pidfile = _RUN_DIR / f"{nf}.pid"
-    if pidfile.exists():
-        try:
-            pid = int(pidfile.read_text().strip())
-            if _pid_alive(pid):
-                return pid
-        except (ValueError, OSError):
-            pass
-
-    # 2. pgrep by binary name
-    if nf != "webui":
-        try:
-            r = subprocess.run(
-                ["pgrep", f"open5gs-{nf}d"],
-                capture_output=True, text=True, timeout=3,
-            )
-            for tok in r.stdout.split():
-                pid = int(tok)
-                if _pid_alive(pid):
-                    return pid
-        except (subprocess.TimeoutExpired, ValueError, OSError):
-            pass
-        return None
-
-    # 3. webui: node process listening on port 9999
-    try:
-        r = subprocess.run(
-            ["ss", "-tlnp", "sport", "=", ":9999"],
-            capture_output=True, text=True, timeout=3,
-        )
-        m = re.search(r"pid=(\d+)", r.stdout)
-        if m:
-            pid = int(m.group(1))
-            if _pid_alive(pid):
-                return pid
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    return None
-
-
-# ── log scanning ───────────────────────────────────────────────────────────────
-
-def _parse_log_ts(token: str, year: int, now_md: tuple[int, int]) -> datetime | None:
-    """Parse MM/DD HH:MM:SS into a datetime, handling year rollover."""
-    try:
-        dt = datetime.strptime(f"{year}/{token}", "%Y/%m/%d %H:%M:%S")
-        # If the log date is in the future (e.g. 12/31 read on 01/02), use prior year
-        now_m, now_d = now_md
-        log_m, log_d = dt.month, dt.day
-        if (log_m, log_d) > (now_m, now_d):
-            dt = dt.replace(year=year - 1)
-        return dt
-    except ValueError:
-        return None
-
-
-def _scan_log(nf: str, minutes: int) -> list[str]:
-    """Return up to 3 recent error/warning lines from the last `minutes` minutes."""
-    logfile = _LOG_DIR / f"{nf}.log"
-    if not logfile.exists():
-        return []
-
-    now = datetime.now()
-    cutoff = now - timedelta(minutes=minutes)
-    now_md = (now.month, now.day)
-    errors: list[str] = []
-
-    try:
-        with open(logfile, "rb") as fh:
-            fh.seek(0, 2)
-            fh.seek(max(0, fh.tell() - 65536))
-            text = fh.read().decode("utf-8", errors="replace")
-
-        for line in text.splitlines():
-            m = _TS_RE.match(line)
-            if not m:
-                continue
-            ts = _parse_log_ts(m.group(1), now.year, now_md)
-            if ts is None or ts < cutoff:
-                continue
-            if _ERR_RE.search(line):
-                errors.append(_ANSI_RE.sub("", line).rstrip())
-
-        return errors[-3:]
-    except OSError:
-        return []
+# WARNING = 2 in tail_nf_logs._LEVELS; used to filter recent errors per NF
+_WARNING_LEVEL = 2
 
 
 # ── infrastructure checks ──────────────────────────────────────────────────────
@@ -207,7 +109,7 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
             "<name>": {
               "status": "green" | "yellow" | "red",
               "pid": int | None,
-              "recent_errors": [str],         # up to 3 stripped log lines
+              "recent_errors": [str],         # up to 3 warning/error message strings
               "endpoint": "ok"|"unreachable"|"error"  # amf/smf only; absent for other NFs
             }
           },
@@ -231,10 +133,14 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
 
     nfs_result: dict[str, dict] = {}
     green = yellow = red = 0
+    since_dt = datetime.now(timezone.utc) - timedelta(minutes=log_minutes)
 
     for nf in _NFS:
         pid = _get_nf_pid(nf)
-        recent_errors = _scan_log(nf, log_minutes) if pid else []
+        recent_errors: list[str] = []
+        if pid:
+            recs, _, _ = _read_nf_log(nf, _WARNING_LEVEL, None, since_dt, 3)
+            recent_errors = [r["message"] for r in recs]
         endpoint = _probe_nf_endpoint(nf) if pid else None
 
         if pid is None:

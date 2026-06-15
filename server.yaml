@@ -1,0 +1,42 @@
+# Open5GS MCP server configuration
+#
+# All security features are DISABLED by default.
+# Existing agents and clients continue to work with no changes.
+#
+# To enable a layer, edit this file and restart the server.
+# Override this file path at startup: python server.py --config /path/to/server.yaml
+
+server:
+  host: "0.0.0.0"   # Network interface to bind. 0.0.0.0 = all interfaces (allows remote VMs).
+  port: 8080
+  transport: "all"   # all | sse | streamable-http | stdio
+
+security:
+  # ── Layer 1: Localhost-only binding ──────────────────────────────────────────
+  # When true, the server ignores --host and binds to 127.0.0.1 only.
+  # Connections from remote VMs will be refused at the OS level.
+  # Keep false if your AI agents connect from a different host.
+  localhost_only: false
+
+  # ── Layer 2: Bearer token authentication ─────────────────────────────────────
+  # When true, every MCP request must include: Authorization: Bearer <token>
+  # Clients that don't send the token receive HTTP 401.
+  #
+  # Token resolution order:
+  #   1. MCP_AUTH_TOKEN environment variable
+  #   2. token field below
+  #   3. Auto-generated (printed to stdout on startup, not persisted)
+  auth_enabled: false
+  token: ""
+
+  # ── Layer 3: Read/write scope enforcement ─────────────────────────────────────
+  # Requires auth_enabled: true — has no effect when auth is disabled.
+  # When true, destructive tools additionally require mcp:write scope in the token.
+  # Destructive tools: nf_lifecycle (start/stop/restart), subscriber (create/delete),
+  #                    subscriber_update_profile, subscriber_update_slices
+  # Read-only tools (status, list, logs, config, traces) only need mcp:read scope.
+  #
+  # The single token configured above always grants both mcp:read and mcp:write.
+  # This setting is most useful when you later issue a separate read-only token
+  # (set MCP_AUTH_TOKEN_READONLY on a read-only agent) that only has mcp:read.
+  scope_enforcement: false

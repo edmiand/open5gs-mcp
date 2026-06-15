@@ -11,8 +11,11 @@ ExecStart=/home/dmandrey/open5gs-mcp/.venv/bin/python \
     /home/dmandrey/open5gs-mcp/src/server.py \
     --host 0.0.0.0 \
     --port 8080
-Restart=on-failure
+Restart=always
 RestartSec=5
+# Ensure the old process is fully dead before the port is released
+KillMode=control-group
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target

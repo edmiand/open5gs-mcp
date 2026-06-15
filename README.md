@@ -43,13 +43,13 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-### Start automatically on boot
+### Start automatically on boot (recommended)
 
 ```bash
 ./open5gs-mcp install
 ```
 
-This installs a systemd service that starts after `network.target` and `mongod.service`.
+Copies `open5gs-mcp.service` to `/etc/systemd/system/`, enables it, and starts it. The service restarts automatically on failure and after boot, and ensures the old process group is fully stopped before rebinding the port.
 
 ### Start manually
 
@@ -57,8 +57,48 @@ This installs a systemd service that starts after `network.target` and `mongod.s
 ./open5gs-mcp start    # runs on 0.0.0.0:8080
 ./open5gs-mcp status
 ./open5gs-mcp stop
+./open5gs-mcp restart
 ./open5gs-mcp logs
+./open5gs-mcp uninstall   # remove systemd service
 ```
+
+> **Note:** Always use `.venv/bin/python` (or the `open5gs-mcp` wrapper) when running the server manually. Running with the system `python3` will fail — dependencies including `psutil` are installed only inside the venv.
+
+### Start options
+
+```bash
+./open5gs-mcp start --transport all      # default: SSE + Streamable HTTP on one port
+./open5gs-mcp start --port 9090          # bind to a different port
+./open5gs-mcp start --host 127.0.0.1    # localhost only
+```
+
+---
+
+## Configuration
+
+Edit `server.yaml` in the project root to configure the server. All security features are disabled by default.
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  transport: "all"   # all | sse | streamable-http | stdio
+
+security:
+  # Layer 1: bind to 127.0.0.1 only (blocks remote connections at OS level)
+  localhost_only: false
+
+  # Layer 2: require Authorization: Bearer <token> on every request
+  auth_enabled: false
+  token: ""           # or set MCP_AUTH_TOKEN env var; leave blank to auto-generate
+
+  # Layer 3: require mcp:write scope for destructive tools (needs auth_enabled: true)
+  # Destructive tools: nf_lifecycle (start/stop/restart), subscriber (create/delete),
+  #                    subscriber_update_profile, subscriber_update_slices
+  scope_enforcement: false
+```
+
+Pass a custom config file path with `--config /path/to/server.yaml`.
 
 ---
 
@@ -109,11 +149,23 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### mcp-curl (quick tool listing)
+### mcp-curl (quick tool inspection)
 
 ```bash
-./mcp-curl                              # list tools on localhost:8080
-./mcp-curl http://192.168.1.10:8080/mcp # remote server
+./mcp-curl                               # table of all tools (name + description)
+./mcp-curl --tool get_ue_trace           # full description + parameter table for one tool
+./mcp-curl --schema nf_lifecycle         # raw JSON inputSchema for one tool
+./mcp-curl http://192.168.1.10:8080/mcp  # remote server
+```
+
+Set `MCP_AUTH_TOKEN` in the environment to authenticate against a token-protected server.
+
+### ue-trace (call get_ue_trace from the shell)
+
+```bash
+./ue-trace imsi-999700000000001          # trace last 60 minutes
+./ue-trace 999700000000001 30            # trace last 30 minutes
+MCP_URL=http://192.168.1.10:8080/mcp ./ue-trace imsi-999700000000001
 ```
 
 ---
@@ -159,14 +211,17 @@ subscriber(action="list", filter={"subscriber_status": 1})
 ```
 open5gs-mcp/
 ├── src/
-│   ├── server.py          # FastMCP server, tool registration
+│   ├── server.py          # FastMCP server, tool registration, transport dispatch
+│   ├── auth.py            # StaticTokenVerifier + token resolution (Layer 2)
 │   └── tools/
 │       ├── nf_lifecycle.py
 │       ├── system_health_snapshot.py
 │       ├── subscriber.py              # Action-dispatched: read/list/create/delete
 │       ├── subscriber_update_profile.py
 │       ├── subscriber_update_slices.py
-│       ├── _subscriber_util.py        # Shared utilities (IMSI validation, MongoDB, serialization)
+│       ├── _subscriber_util.py        # Shared: IMSI validation, MongoDB, serialization
+│       ├── _nf_util.py                # Shared: NF process helpers
+│       ├── _log_util.py               # Shared: log parsing helpers
 │       ├── list_ue_sessions.py
 │       ├── tail_nf_logs.py
 │       ├── read_nf_config.py
@@ -174,9 +229,23 @@ open5gs-mcp/
 │       ├── amf_ran_query.py
 │       └── nf_resource_usage.py
 ├── tests/
-│   └── test_server.py     # integration tests over stdio
-├── open5gs-mcp            # CLI: start / stop / restart / status / logs / install
-├── open5gs-mcp.service    # systemd unit file
-├── mcp-curl               # quick tool listing via HTTP
+│   ├── conftest.py
+│   ├── test_server.py
+│   ├── test_nf_lifecycle.py
+│   ├── test_subscriber.py
+│   ├── test_subscriber_update_profile.py
+│   ├── test_subscriber_update_slices.py
+│   ├── test_list_ue_sessions.py
+│   ├── test_tail_nf_logs.py
+│   ├── test_read_nf_config.py
+│   ├── test_ue_trace.py
+│   ├── test_amf_ran_query.py
+│   ├── test_nf_resource_usage.py
+│   └── test_system_health_snapshot.py
+├── server.yaml            # server + security configuration (all defaults off)
+├── open5gs-mcp            # CLI: start/stop/restart/status/logs/install/uninstall
+├── open5gs-mcp.service    # systemd unit (Restart=always, clean port release on stop)
+├── mcp-curl               # HTTP tool inspector (list / --tool / --schema)
+├── ue-trace               # Shell wrapper for get_ue_trace
 └── ollmcp-servers.json    # ready-made ollmcp server config
 ```

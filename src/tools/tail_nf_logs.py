@@ -3,7 +3,7 @@
 import re
 from datetime import datetime, timedelta, timezone
 
-from tools._log_util import _LINE_RE, _ANSI_RE, _SOURCE_RE, parse_log_ts
+from tools._log_util import _parse_line
 from tools._nf_util import LOG_DIR as _LOG_DIR
 
 _ALL_NFS = ["nrf", "scp", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "webui"]
@@ -52,33 +52,6 @@ def _parse_since(since: str | None) -> datetime | None:
 def _min_level_int(level_filter: str) -> int:
     canonical = _LEVEL_ALIASES.get(level_filter.lower(), level_filter.upper())
     return _LEVELS.get(canonical, 0)
-
-
-def _parse_line(raw: str, year: int) -> dict | None:
-    """Return a parsed log record dict or None if the line doesn't match."""
-    clean = _ANSI_RE.sub("", raw).rstrip()
-    m = _LINE_RE.match(clean)
-    if not m:
-        return None
-    ts_str, component, level, message = m.group(1), m.group(2), m.group(3), m.group(4)
-    ts = parse_log_ts(ts_str, year)
-    if ts is None:
-        return None
-
-    # Extract source file reference from end of message
-    src_m = _SOURCE_RE.search(message)
-    source = src_m.group(1) if src_m else None
-    if source:
-        message = message[: src_m.start()].rstrip()
-
-    return {
-        "ts": ts,
-        "ts_str": ts_str,
-        "component": component,
-        "level": level.upper(),
-        "message": message.strip(),
-        "source": source,
-    }
 
 
 def _read_nf_log(

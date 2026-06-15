@@ -2,19 +2,15 @@
 
 import json
 import subprocess
-from pathlib import Path
 
 import httpx
 import yaml
 
-_CONFIG_DIR = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "open5gs" / "install" / "etc" / "open5gs"
-)
+from tools._nf_util import CONFIG_DIR as _CONFIG_DIR, metrics_url as _metrics_url
 
 
 def _amf_sbi_url() -> str:
-    """Read AMF SBI address and port from amf.yaml."""
+    """Read AMF SBI address and port from amf.yaml (SBI, not metrics)."""
     try:
         cfg_path = _CONFIG_DIR / "amf.yaml"
         with open(cfg_path) as f:
@@ -24,18 +20,6 @@ def _amf_sbi_url() -> str:
         return f"http://{srv['address']}:{port}"
     except Exception:
         return "http://127.0.0.5:7777"
-
-
-def _amf_metrics_url() -> str:
-    """Read AMF metrics address and port from amf.yaml."""
-    try:
-        cfg_path = _CONFIG_DIR / "amf.yaml"
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f)
-        srv = cfg["amf"]["metrics"]["server"][0]
-        return f"http://{srv['address']}:{srv['port']}"
-    except Exception:
-        return "http://127.0.0.5:9090"
 
 
 def _oam_get(url: str) -> tuple[dict | None, str]:
@@ -92,7 +76,7 @@ def amf_ran_query() -> dict:
     if data is None:
         return {"ok": False, "error": err}
 
-    gnb_items, gnbs_status = _fetch_gnb_info(_amf_metrics_url())
+    gnb_items, gnbs_status = _fetch_gnb_info(_metrics_url("amf"))
 
     gnbs = [
         {

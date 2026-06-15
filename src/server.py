@@ -2,11 +2,13 @@
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import Literal
 
 import uvicorn
+import yaml
 from starlette.applications import Starlette
 
 # Make `src/` importable regardless of invocation method
@@ -14,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import mcp.server.sse as _mcp_sse
 from mcp.server.fastmcp import FastMCP
+from mcp.server.auth.middleware.auth_context import get_access_token as _get_access_token
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
 from tools.system_health_snapshot import system_health_snapshot as _health
@@ -36,16 +39,95 @@ class _ESRWithPing(_ESR):
 
 _mcp_sse.EventSourceResponse = _ESRWithPing
 
+
+# ── Config loading ─────────────────────────────────────────────────────────────
+
+_CONFIG_DEFAULTS: dict = {
+    "server": {"host": "0.0.0.0", "port": 8080, "transport": "all"},
+    "security": {
+        "localhost_only": False,
+        "auth_enabled": False,
+        "token": "",
+        "scope_enforcement": False,
+    },
+}
+
+
+def _load_config(path: Path | None) -> dict:
+    """Load server.yaml. Missing file or missing keys fall back to defaults."""
+    if path is None:
+        candidate = Path(__file__).parent.parent / "server.yaml"
+        path = candidate if candidate.exists() else None
+    if path is None or not path.exists():
+        return {k: dict(v) for k, v in _CONFIG_DEFAULTS.items()}
+    with open(path) as fh:
+        data = yaml.safe_load(fh) or {}
+    result = {k: dict(v) for k, v in _CONFIG_DEFAULTS.items()}
+    for section in ("server", "security"):
+        if section in data and isinstance(data[section], dict):
+            result[section].update(data[section])
+    return result
+
+
+def _early_config() -> dict:
+    """Extract --config path from argv without consuming other flags, then load."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--config", default=None)
+    ns, _ = p.parse_known_args()
+    return _load_config(Path(ns.config) if ns.config else None)
+
+
+_cfg = _early_config()
+_srv = _cfg["server"]
+_sec = _cfg["security"]
+
+# Layer 3 is only active when Layer 2 is also on
+_scope_enforce: bool = bool(_sec["scope_enforcement"] and _sec["auth_enabled"])
+
+# ── Auth setup (Layer 2) ───────────────────────────────────────────────────────
+
+_token_verifier = None
+_auth_settings = None
+
+if _sec["auth_enabled"]:
+    from auth import StaticTokenVerifier, resolve_token
+    from mcp.server.auth.settings import AuthSettings
+
+    _resolved_token = resolve_token(_sec["token"])
+    _token_verifier = StaticTokenVerifier(_resolved_token)
+    _auth_settings = AuthSettings(
+        issuer_url=f"http://localhost:{_srv['port']}",
+        resource_server_url=None,
+        required_scopes=["mcp:read"],
+    )
+
+
+# ── FastMCP instance ───────────────────────────────────────────────────────────
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Open5GS MCP server")
     p.add_argument(
         "--transport",
         choices=["stdio", "streamable-http", "sse", "all"],
-        default="all",
-        help="Transport to use (default: all — serves SSE + streamable-http on the same port)",
+        default=_srv["transport"],
+        help=f"Transport to use (default: {_srv['transport']})",
     )
-    p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
-    p.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
+    p.add_argument(
+        "--host",
+        default=_srv["host"],
+        help=f"Bind host (default: {_srv['host']}). Ignored when security.localhost_only=true.",
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=_srv["port"],
+        help=f"Bind port (default: {_srv['port']})",
+    )
+    p.add_argument(
+        "--config",
+        default=None,
+        help="Path to server.yaml config file (default: auto-detect at project root)",
+    )
     return p.parse_args()
 
 
@@ -55,10 +137,14 @@ mcp = FastMCP(
         "Manage Open5GS 5G core network functions. "
         "Use nf_lifecycle to start, stop, restart, or check the status of NFs."
     ),
-    host="0.0.0.0",
-    port=8080,
+    token_verifier=_token_verifier,
+    auth=_auth_settings,
+    host=_srv["host"],
+    port=_srv["port"],
 )
 
+
+# ── Tool registrations ─────────────────────────────────────────────────────────
 
 @mcp.tool()
 async def nf_lifecycle(
@@ -75,6 +161,10 @@ async def nf_lifecycle(
     result. For status: {status, pid, uptime}. For lifecycle ops: {result, pid}.
     UPF operations require sudo — the underlying script handles privilege escalation.
     """
+    if _scope_enforce and action in ("start", "stop", "restart"):
+        tok = _get_access_token()
+        if tok is None or "mcp:write" not in tok.scopes:
+            return {"ok": False, "error": "mcp:write scope required for lifecycle mutations"}
     return await asyncio.to_thread(_nf_lifecycle, action, nf)
 
 
@@ -124,6 +214,10 @@ async def subscriber(
       delete: {"ok": True, "deleted": bool, "imsi": str}
       error:  {"ok": False, "error": str}
     """
+    if _scope_enforce and action in ("create", "delete"):
+        tok = _get_access_token()
+        if tok is None or "mcp:write" not in tok.scopes:
+            return {"ok": False, "error": "mcp:write scope required for subscriber mutations"}
     return await asyncio.to_thread(_subscriber, action, imsi, data, limit, filter)
 
 
@@ -152,6 +246,10 @@ async def subscriber_update_profile(
 
     Returns updated subscriber document (secrets redacted).
     """
+    if _scope_enforce:
+        tok = _get_access_token()
+        if tok is None or "mcp:write" not in tok.scopes:
+            return {"ok": False, "error": "mcp:write scope required for subscriber_update_profile"}
     return await asyncio.to_thread(
         _subscriber_update_profile,
         imsi, security, ambr, msisdn, imeisv, mme_host, mme_realm, purge_flag,
@@ -178,8 +276,11 @@ async def subscriber_update_slices(imsi: str, slices: list) -> dict:
 
     Returns updated subscriber document (secrets redacted).
     """
+    if _scope_enforce:
+        tok = _get_access_token()
+        if tok is None or "mcp:write" not in tok.scopes:
+            return {"ok": False, "error": "mcp:write scope required for subscriber_update_slices"}
     return await asyncio.to_thread(_subscriber_update_slices, imsi, slices)
-
 
 
 @mcp.tool()
@@ -334,10 +435,16 @@ async def amf_ran_query() -> dict:
     return await asyncio.to_thread(_amf_ran_query)
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     args = _parse_args()
-    mcp.host = args.host
+
+    # Layer 1: localhost_only in config overrides --host
+    if _sec["localhost_only"]:
+        mcp.host = "127.0.0.1"
+    else:
+        mcp.host = args.host
     mcp.port = args.port
 
     if args.transport == "stdio":
@@ -364,14 +471,19 @@ if __name__ == "__main__":
                 await _combined_lifespan_app(scope, receive, send)
                 return
             path = scope.get("path", "")
-            if path.startswith("/mcp"):
-                await _http_app(scope, receive, send)
-            else:
-                await _sse_app(scope, receive, send)
+            target = _http_app if path.startswith("/mcp") else _sse_app
+            try:
+                await target(scope, receive, send)
+            except Exception:
+                # A broken SSE connection must not crash the whole server.
+                # Uvicorn treats an unhandled exception from run_asgi() as fatal
+                # (sets should_exit=True), so we catch here and let it log the
+                # traceback without propagating.
+                logging.exception("Unhandled ASGI error on %s (connection dropped)", path)
 
         _combined_lifespan_app = Starlette(lifespan=_combined_lifespan)
 
-        uvicorn.run(_dispatch, host=args.host, port=args.port,
+        uvicorn.run(_dispatch, host=mcp.host, port=mcp.port,
                     log_level=mcp.settings.log_level.lower())
     else:
         mcp.run(transport=args.transport)
