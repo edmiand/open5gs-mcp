@@ -1,7 +1,7 @@
 """Tests for get_ue_trace tool."""
 
 import sys
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,36 +13,38 @@ from tools.ue_trace import get_ue_trace, _normalize_supi, _infer_event
 
 
 # ── Sample log snippets ───────────────────────────────────────────────────────
-# Use today's date so timestamps always fall within the 1440-minute search window.
+# Anchor 2 hours in the past so parse_log_ts never rolls timestamps back a year.
 
-_D = date.today().strftime("%m/%d")
+_BASE = datetime.now(timezone.utc) - timedelta(hours=2)
+_D = _BASE.strftime("%m/%d")
+_BT = _BASE.strftime("%H:%M:%S")   # base time, always > 2h in the past
 
 _AMF_LOG = (
-    f"{_D} 10:00:00.100: [amf] INFO: Registration Request [imsi-999700000000001]"
+    f"{_D} {_BT}.100: [amf] INFO: Registration Request [imsi-999700000000001]"
     " (amf_ue_ngap_id=1 ran_ue_ngap_id=1) (nr-gnb.c:123)\n"
-    f"{_D} 10:00:00.200: [amf] INFO: [999700000000001] Authentication Request (amf-sm.c:456)\n"
-    f"{_D} 10:00:00.300: [amf] INFO: [999700000000001] Authentication Response (amf-sm.c:457)\n"
-    f"{_D} 10:00:00.400: [amf] INFO: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
-    f"{_D} 10:00:00.500: [amf] INFO: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
-    f"{_D} 10:00:00.600: [amf] INFO: [999700000000001] Registration Accept (amf-sm.c:600)\n"
-    f"{_D} 10:00:00.700: [amf] INFO: [999700000000001] PDU Session Establishment Request"
+    f"{_D} {_BT}.200: [amf] INFO: [999700000000001] Authentication Request (amf-sm.c:456)\n"
+    f"{_D} {_BT}.300: [amf] INFO: [999700000000001] Authentication Response (amf-sm.c:457)\n"
+    f"{_D} {_BT}.400: [amf] INFO: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
+    f"{_D} {_BT}.500: [amf] INFO: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
+    f"{_D} {_BT}.600: [amf] INFO: [999700000000001] Registration Accept (amf-sm.c:600)\n"
+    f"{_D} {_BT}.700: [amf] INFO: [999700000000001] PDU Session Establishment Request"
     " pdu_session_id=1 (amf-sm.c:700)\n"
-    f"{_D} 10:00:00.800: [amf] INFO: [999700000000001] PDU Session Establishment Accept (amf-sm.c:800)\n"
+    f"{_D} {_BT}.800: [amf] INFO: [999700000000001] PDU Session Establishment Accept (amf-sm.c:800)\n"
 )
 
 _AUSF_LOG = (
-    f"{_D} 10:00:00.150: [ausf] INFO: Nausf-UEAuthentication for imsi-999700000000001 (ausf-sm.c:100)\n"
+    f"{_D} {_BT}.150: [ausf] INFO: Nausf-UEAuthentication for imsi-999700000000001 (ausf-sm.c:100)\n"
 )
 
 _UDM_LOG = (
-    f"{_D} 10:00:00.160: [udm] INFO: Nudm-Authentication for 999700000000001 (udm-sm.c:100)\n"
+    f"{_D} {_BT}.160: [udm] INFO: Nudm-Authentication for 999700000000001 (udm-sm.c:100)\n"
 )
 
 _SMF_LOG = (
-    f"{_D} 10:00:00.750: [smf] INFO: PDU Session Establishment dnn=internet"
+    f"{_D} {_BT}.750: [smf] INFO: PDU Session Establishment dnn=internet"
     " seid:0x1234 (smf-sm.c:100)\n"
-    f"{_D} 10:00:00.760: [smf] INFO: PFCP Session Establishment seid:0x1234 (smf-sm.c:200)\n"
-    f"{_D} 10:00:00.770: [smf] INFO: UE IP assigned 10.45.0.2 (smf-sm.c:300)\n"
+    f"{_D} {_BT}.760: [smf] INFO: PFCP Session Establishment seid:0x1234 (smf-sm.c:200)\n"
+    f"{_D} {_BT}.770: [smf] INFO: UE IP assigned 10.45.0.2 (smf-sm.c:300)\n"
 )
 
 
@@ -290,14 +292,14 @@ class TestGetUETrace:
         ngap_ids is empty.
         """
         amf_log_real_format = (
-            f"{_D} 10:00:00.100: [amf] DEBUG: [InitialUEMessage] RAN_UE_NGAP_ID[1]\n"
-            f"{_D} 10:00:00.110: [amf] DEBUG: Registration Request (nr-gnb.c:123)\n"
-            f"{_D} 10:00:00.200: [amf] DEBUG: Authentication Request (amf-sm.c:456)\n"
-            f"{_D} 10:00:00.300: [amf] DEBUG: Authentication Response (amf-sm.c:457)\n"
+            f"{_D} {_BT}.100: [amf] DEBUG: [InitialUEMessage] RAN_UE_NGAP_ID[1]\n"
+            f"{_D} {_BT}.110: [amf] DEBUG: Registration Request (nr-gnb.c:123)\n"
+            f"{_D} {_BT}.200: [amf] DEBUG: Authentication Request (amf-sm.c:456)\n"
+            f"{_D} {_BT}.300: [amf] DEBUG: Authentication Response (amf-sm.c:457)\n"
             # SUPI first appears here
-            f"{_D} 10:00:00.400: [amf] DEBUG: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
-            f"{_D} 10:00:00.500: [amf] DEBUG: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
-            f"{_D} 10:00:00.600: [amf] DEBUG: [999700000000001] Registration Accept (amf-sm.c:600)\n"
+            f"{_D} {_BT}.400: [amf] DEBUG: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
+            f"{_D} {_BT}.500: [amf] DEBUG: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
+            f"{_D} {_BT}.600: [amf] DEBUG: [999700000000001] Registration Accept (amf-sm.c:600)\n"
         )
 
         def realistic_log(nf: str):

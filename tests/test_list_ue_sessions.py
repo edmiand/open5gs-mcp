@@ -34,11 +34,6 @@ _SMF_UE = {
 
 def _make_oam_get(amf_data, smf_data):
     """Return a side_effect function for httpx.get that serves AMF then SMF data."""
-    responses = {
-        "9090": oam_page(amf_data),   # AMF metrics port
-        "9090/pdu": oam_page(smf_data),
-    }
-
     def _get(url: str, **kwargs):
         if "pdu-info" in url:
             return http_response(oam_page(smf_data))

@@ -91,7 +91,6 @@ class TestHappyPath:
             assert required.issubset(entry.keys()), f"missing fields: {entry}"
 
     def test_results_sorted_chronologically(self, log_dir):
-        from conftest import today as _today
         d = __import__("datetime").date.today().strftime("%m/%d")
         lines = [
             f"{d} 10:00:02.000: [amf] INFO: second\n",
@@ -108,7 +107,7 @@ class TestHappyPath:
         write_nf_log(log_dir, "amf", many)
         r = tail_nf_logs(nf="amf", lines=5)
         assert r["ok"] is True
-        assert len(r["lines"]) <= 5
+        assert len(r["lines"]) == 5
 
 
 # ── filtering ─────────────────────────────────────────────────────────────────
