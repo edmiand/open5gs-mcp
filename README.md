@@ -29,6 +29,12 @@ Instead of SSH-ing into a server and grepping logs, an agent can call a single t
 ## Requirements
 
 - Open5GS installed at `../open5gs` (sibling directory)
+  - The `nf_lifecycle` tool requires `open5gs-ctl.sh` to be present in that directory.
+    This script is **not part of vanilla Open5GS** — it ships with the
+    [edmiand/open5gs](https://github.com/edmiand/open5gs) fork.
+    Clone that fork (or copy the script) alongside this repo before using lifecycle operations.
+  - Vanilla Open5GS manages NFs via `systemctl` (one service per NF).
+    All other tools in this repo work with a vanilla install.
 - Python 3.12+
 - MongoDB running (`mongod.service`)
 

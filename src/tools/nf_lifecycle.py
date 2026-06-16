@@ -1,4 +1,10 @@
-"""nf_lifecycle — start/stop/restart/status any Open5GS network function."""
+"""nf_lifecycle — start/stop/restart/status any Open5GS network function.
+
+Depends on open5gs-ctl.sh being present at ../open5gs/open5gs-ctl.sh.
+This script is not part of vanilla Open5GS; it ships with the
+edmiand/open5gs fork (https://github.com/edmiand/open5gs).
+Vanilla Open5GS manages NFs via systemd (systemctl start open5gs-amfd, etc.).
+"""
 
 import re
 import subprocess
