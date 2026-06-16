@@ -118,6 +118,7 @@ def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
             capture_output=True,
             text=True,
             timeout=60,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "open5gs-ctl.sh timed out after 60 s"}

@@ -43,7 +43,7 @@ cmd_start() {
     [[ -x $PYTHON ]] || die "Python not found at $PYTHON — activate venv or run from repo root"
     [[ -f $SERVER ]] || die "Server not found: $SERVER"
 
-    nohup "$PYTHON" "$SERVER" \
+    setsid "$PYTHON" "$SERVER" \
         --transport "$transport" \
         --host "$host" \
         --port "$port" \
