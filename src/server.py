@@ -84,6 +84,14 @@ _sec = _cfg["security"]
 # Layer 3 is only active when Layer 2 is also on
 _scope_enforce: bool = bool(_sec["scope_enforcement"] and _sec["auth_enabled"])
 
+
+def _require_write_scope(operation: str) -> dict | None:
+    """Return an error dict if mcp:write scope is missing, else None."""
+    tok = _get_access_token()
+    if tok is None or "mcp:write" not in tok.scopes:
+        return {"ok": False, "error": f"mcp:write scope required for {operation}"}
+    return None
+
 # ── Auth setup (Layer 2) ───────────────────────────────────────────────────────
 
 _token_verifier = None
@@ -103,6 +111,11 @@ if _sec["auth_enabled"]:
 
 
 # ── FastMCP instance ───────────────────────────────────────────────────────────
+
+# Apply localhost_only here so the setting takes effect regardless of whether
+# the server is run directly or imported as a module.
+_effective_host = "127.0.0.1" if _sec["localhost_only"] else _srv["host"]
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Open5GS MCP server")
@@ -139,7 +152,7 @@ mcp = FastMCP(
     ),
     token_verifier=_token_verifier,
     auth=_auth_settings,
-    host=_srv["host"],
+    host=_effective_host,
     port=_srv["port"],
 )
 
@@ -162,9 +175,8 @@ async def nf_lifecycle(
     UPF operations require sudo — the underlying script handles privilege escalation.
     """
     if _scope_enforce and action in ("start", "stop", "restart"):
-        tok = _get_access_token()
-        if tok is None or "mcp:write" not in tok.scopes:
-            return {"ok": False, "error": "mcp:write scope required for lifecycle mutations"}
+        if err := _require_write_scope("lifecycle mutations"):
+            return err
     return await asyncio.to_thread(_nf_lifecycle, action, nf)
 
 
@@ -215,9 +227,8 @@ async def subscriber(
       error:  {"ok": False, "error": str}
     """
     if _scope_enforce and action in ("create", "delete"):
-        tok = _get_access_token()
-        if tok is None or "mcp:write" not in tok.scopes:
-            return {"ok": False, "error": "mcp:write scope required for subscriber mutations"}
+        if err := _require_write_scope("subscriber mutations"):
+            return err
     return await asyncio.to_thread(_subscriber, action, imsi, data, limit, filter)
 
 
@@ -247,9 +258,8 @@ async def subscriber_update_profile(
     Returns updated subscriber document (secrets redacted).
     """
     if _scope_enforce:
-        tok = _get_access_token()
-        if tok is None or "mcp:write" not in tok.scopes:
-            return {"ok": False, "error": "mcp:write scope required for subscriber_update_profile"}
+        if err := _require_write_scope("subscriber_update_profile"):
+            return err
     return await asyncio.to_thread(
         _subscriber_update_profile,
         imsi, security, ambr, msisdn, imeisv, mme_host, mme_realm, purge_flag,
@@ -277,9 +287,8 @@ async def subscriber_update_slices(imsi: str, slices: list) -> dict:
     Returns updated subscriber document (secrets redacted).
     """
     if _scope_enforce:
-        tok = _get_access_token()
-        if tok is None or "mcp:write" not in tok.scopes:
-            return {"ok": False, "error": "mcp:write scope required for subscriber_update_slices"}
+        if err := _require_write_scope("subscriber_update_slices"):
+            return err
     return await asyncio.to_thread(_subscriber_update_slices, imsi, slices)
 
 

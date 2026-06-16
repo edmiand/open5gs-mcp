@@ -7,8 +7,6 @@ from tools._log_util import _ANSI_RE, _parse_line
 from tools._nf_util import LOG_DIR as _LOG_DIR
 from tools._subscriber_util import normalize_supi as _normalize_supi_fn
 
-_normalize_supi = _normalize_supi_fn
-
 # NRF excluded — its logs contain NF-lifecycle events, not per-UE signaling (Fix 3)
 _TRACE_NFS = ["amf", "ausf", "udm", "udr", "smf", "pcf", "upf"]
 
@@ -221,26 +219,23 @@ def _search_amf_pre_auth(
 ) -> list[dict]:
     """Return AMF log lines in [before_ts - lookback, before_ts) that belong to this UE.
 
-    Two complementary strategies:
-    1. NGAP ID correlation — lines containing any of the extracted NGAP IDs.
-    2. Pattern matching — lines matching any known NAS/NGAP signaling pattern from
-       _MSG_RULES, even when no NGAP IDs were extracted from the SUPI-bearing lines.
-
-    Strategy 2 is essential because Open5GS often logs Security Mode Command (the first
-    SUPI-bearing line) without NGAP IDs, leaving ngap_ids empty and making strategy 1
-    return nothing.
+    Matches lines containing any of the extracted NGAP IDs (amf_ue_ngap_id /
+    ran_ue_ngap_id). Must only be called when ngap_ids is non-empty — pattern-only
+    matching is intentionally omitted because it cannot discriminate between UEs
+    and would contaminate the trace with events from concurrent registrations.
     """
+    if not ngap_ids:
+        return []
+
     text, err = _read_log_tail("amf")
     if err or not text:
         return []
 
-    ngap_pattern = None
-    if ngap_ids:
-        ngap_val_alt = "|".join(re.escape(id_) for id_ in ngap_ids)
-        ngap_pattern = re.compile(
-            r"(?:amf_ue_ngap_id|ran_ue_ngap_id)[\[:\s]+(?:" + ngap_val_alt + r")\b",
-            re.I,
-        )
+    ngap_val_alt = "|".join(re.escape(id_) for id_ in ngap_ids)
+    ngap_pattern = re.compile(
+        r"(?:amf_ue_ngap_id|ran_ue_ngap_id)[\[:\s]+(?:" + ngap_val_alt + r")\b",
+        re.I,
+    )
 
     year = datetime.now().year
     window_start = before_ts - timedelta(seconds=lookback_seconds)
@@ -253,13 +248,7 @@ def _search_amf_pre_auth(
             continue
         if not (window_start <= rec["ts"] < before_ts):
             continue
-
-        msg = rec["message"]
-        matched = (
-            (ngap_pattern is not None and ngap_pattern.search(raw_line))
-            or any(pattern.search(msg) for pattern, *_ in _MSG_RULES)
-        )
-        if not matched:
+        if not ngap_pattern.search(raw_line):
             continue
 
         raw_clean = _ANSI_RE.sub("", raw_line).rstrip()
@@ -406,8 +395,8 @@ def get_ue_trace(
         if amf_result["error"]:
             nf_errors["amf"] = amf_result["error"]
 
-    # ── Step 1b: collect pre-auth AMF events via NGAP IDs or pattern matching ──
-    if "amf" in nfs_to_search and amf_result.get("first_ts"):
+    # ── Step 1b: collect pre-auth AMF events via NGAP IDs ────────────────────
+    if "amf" in nfs_to_search and amf_result.get("first_ts") and amf_result.get("ngap_ids"):
         pre_auth = _search_amf_pre_auth(amf_result["ngap_ids"], amf_result["first_ts"])
         if pre_auth:
             existing_raws = {ln["raw"] for ln in amf_result["lines"]}

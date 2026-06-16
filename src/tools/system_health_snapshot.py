@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 from tools._nf_util import get_nf_pid as _get_nf_pid, metrics_url as _metrics_url
-from tools.tail_nf_logs import _read_nf_log
+from tools.tail_nf_logs import _read_nf_log, _LEVELS as _LOG_LEVELS
 
 # NFs that expose subscriber-relevant HTTP info endpoints
 _NF_INFO_ENDPOINTS: dict[str, str] = {
@@ -18,8 +18,7 @@ _NF_INFO_ENDPOINTS: dict[str, str] = {
 # Startup dependency order (matches open5gs-ctl.sh)
 _NFS = ["nrf", "scp", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "webui"]
 
-# WARNING = 2 in tail_nf_logs._LEVELS; used to filter recent errors per NF
-_WARNING_LEVEL = 2
+_WARNING_LEVEL = _LOG_LEVELS["WARNING"]
 
 
 # ── infrastructure checks ──────────────────────────────────────────────────────
@@ -139,8 +138,10 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
         pid = _get_nf_pid(nf)
         recent_errors: list[str] = []
         if pid:
-            recs, _, _ = _read_nf_log(nf, _WARNING_LEVEL, None, since_dt, 3)
-            recent_errors = [r["message"] for r in recs]
+            recs, _, _ = _read_nf_log(nf, _WARNING_LEVEL, None, since_dt, 20)
+            # Sort by severity desc so FATAL/CRIT/ERROR lines surface before WARNINGs
+            recs.sort(key=lambda r: _LOG_LEVELS.get(r.get("level", ""), 0), reverse=True)
+            recent_errors = [r["message"] for r in recs[:3]]
         endpoint = _probe_nf_endpoint(nf) if pid else None
 
         if pid is None:

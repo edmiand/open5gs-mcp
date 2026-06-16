@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 import httpx
 
 from tools._nf_util import metrics_url as _metrics_url
-from tools._subscriber_util import normalize_imsi as _normalize_imsi
+
+
+def _bare_imsi(supi: str) -> str:
+    """Strip any recognised SUPI prefix, returning raw digit string."""
+    return supi.strip().lower().removeprefix("imsi-")
 
 
 # ── data fetchers ──────────────────────────────────────────────────────────────
@@ -161,17 +165,17 @@ def list_ue_sessions(
     # Index SMF sessions by SUPI for O(1) join
     smf_by_supi: dict[str, dict] = {u["supi"]: u for u in smf_items if "supi" in u}
 
-    # Validate and normalise IMSI filter
+    # Validate and normalise IMSI prefix filter (any digit length is valid)
     filter_norm: str | None = None
     if imsi_filter:
-        filter_norm = _normalize_imsi(imsi_filter)
-        if filter_norm is None:
+        filter_norm = _bare_imsi(imsi_filter)
+        if not filter_norm.isdigit():
             return {"ok": False, "error": f"Invalid imsi_filter '{imsi_filter}': must be digits or 'imsi-<digits>'"}
 
     ues: list[dict] = []
     for amf_ue in amf_items:
         supi = amf_ue.get("supi", "")
-        imsi = supi.removeprefix("imsi-")
+        imsi = _bare_imsi(supi)
 
         # Apply IMSI filter
         if filter_norm and not imsi.startswith(filter_norm):

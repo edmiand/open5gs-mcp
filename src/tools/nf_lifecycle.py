@@ -141,4 +141,7 @@ def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
     }
     if stderr:
         response["stderr"] = stderr
+    if not nfs and proc.returncode != 0:
+        response["error"] = f"script exited {proc.returncode} with no parseable output"
+        response["raw_output"] = stdout.strip()
     return response

@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tools.ue_trace import get_ue_trace, _normalize_supi, _infer_event
+from tools.ue_trace import get_ue_trace, _normalize_supi_fn as _normalize_supi, _infer_event
 
 
 # ── Sample log snippets ───────────────────────────────────────────────────────
@@ -283,36 +283,77 @@ class TestGetUETrace:
         assert result["summary"]["registration_success"] is False
 
     @patch("tools.ue_trace._read_log_tail")
-    def test_pre_auth_lines_captured_when_supi_absent(self, mock_read):
-        """Real Open5GS logs: SUPI only appears from Security Mode Command onward.
+    def test_pre_auth_lines_captured_via_ngap_id(self, mock_read):
+        """Pre-auth AMF events are captured when SUPI-bearing lines carry NGAP IDs.
 
-        Registration Request and Authentication Request/Response lines don't contain
-        the SUPI because the AMF only learns it after AUSF/UDM decrypts the SUCI.
-        _search_amf_pre_auth must find them via message-pattern matching even when
-        ngap_ids is empty.
+        Open5GS sometimes includes RAN_UE_NGAP_ID on the Security Mode Command line.
+        When ngap_ids is non-empty, _search_amf_pre_auth uses NGAP ID matching to
+        recover InitialUEMessage lines that appear before the first SUPI-bearing line.
+
+        Registration Request / Auth Request / Auth Response lines contain NO UE
+        identifier (no SUPI, no NGAP ID) and therefore cannot be safely attributed
+        to a specific UE — they are not captured. Pattern-only matching was removed
+        because it would contaminate the trace with events from concurrent UEs.
         """
-        amf_log_real_format = (
+        amf_log_ngap_ids_present = (
             f"{_D} {_BT}.100: [amf] DEBUG: [InitialUEMessage] RAN_UE_NGAP_ID[1]\n"
             f"{_D} {_BT}.110: [amf] DEBUG: Registration Request (nr-gnb.c:123)\n"
             f"{_D} {_BT}.200: [amf] DEBUG: Authentication Request (amf-sm.c:456)\n"
             f"{_D} {_BT}.300: [amf] DEBUG: Authentication Response (amf-sm.c:457)\n"
-            # SUPI first appears here
-            f"{_D} {_BT}.400: [amf] DEBUG: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
+            # SUPI first appears here, with NGAP ID present on the same line
+            f"{_D} {_BT}.400: [amf] DEBUG: [999700000000001] Security Mode Command AMF_UE_NGAP_ID[1] (amf-sm.c:500)\n"
             f"{_D} {_BT}.500: [amf] DEBUG: [999700000000001] Security Mode Complete (amf-sm.c:501)\n"
             f"{_D} {_BT}.600: [amf] DEBUG: [999700000000001] Registration Accept (amf-sm.c:600)\n"
         )
 
         def realistic_log(nf: str):
             if nf == "amf":
-                return amf_log_real_format, None
+                return amf_log_ngap_ids_present, None
             return _fake_log(nf)
 
         mock_read.side_effect = realistic_log
         result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
         assert result["ok"] is True
         msg_types = [e["message_type"] for e in result["events"]]
-        assert "Registration Request" in msg_types, "Registration Request missing from pre-auth phase"
-        assert "Authentication Request" in msg_types, "Authentication Request missing from pre-auth phase"
-        assert "Authentication Response" in msg_types, "Authentication Response missing from pre-auth phase"
+        # InitialUEMessage is captured via NGAP ID 1 matching
+        assert "InitialUEMessage" in msg_types or "NGSetupRequest" in msg_types or any("Initial" in m for m in msg_types), \
+            "Expected at least one pre-auth NGAP event captured via NGAP ID"
+        assert "Security Mode Command" in msg_types
+        assert "Registration Accept" in msg_types
+        # Pre-auth NAS messages without UE identifiers are not captured — that is correct
+        # behaviour; including them would risk contaminating the trace with other UEs' events
+
+    @patch("tools.ue_trace._read_log_tail")
+    def test_no_contamination_when_ngap_ids_empty(self, mock_read):
+        """When SUPI-bearing lines have no NGAP IDs, pre-auth search is skipped entirely.
+
+        This prevents events from concurrent UEs in the same 30-second window from
+        being injected into the target UE's trace.
+        """
+        other_ue_imsi = "999700000000002"
+        amf_log_no_ngap = (
+            # Other UE registers at the same time
+            f"{_D} {_BT}.050: [amf] DEBUG: [{other_ue_imsi}] Registration Request (nr-gnb.c:50)\n"
+            f"{_D} {_BT}.100: [amf] DEBUG: Registration Request (nr-gnb.c:123)\n"
+            f"{_D} {_BT}.200: [amf] DEBUG: Authentication Request (amf-sm.c:456)\n"
+            # Target UE: SUPI-bearing lines have no NGAP ID
+            f"{_D} {_BT}.400: [amf] DEBUG: [999700000000001] Security Mode Command (amf-sm.c:500)\n"
+            f"{_D} {_BT}.500: [amf] DEBUG: [999700000000001] Registration Accept (amf-sm.c:600)\n"
+        )
+
+        def realistic_log(nf: str):
+            if nf == "amf":
+                return amf_log_no_ngap, None
+            return _fake_log(nf)
+
+        mock_read.side_effect = realistic_log
+        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        assert result["ok"] is True
+        messages = [e["message"] for e in result["events"]]
+        # No event from the other UE must appear in the trace
+        assert not any(other_ue_imsi in m for m in messages), \
+            "Other UE's events leaked into this UE's trace"
+        # SUPI-bearing events for the target UE are still present
+        msg_types = [e["message_type"] for e in result["events"]]
         assert "Security Mode Command" in msg_types
         assert "Registration Accept" in msg_types
