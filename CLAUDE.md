@@ -52,7 +52,7 @@ NRF SBI: http://localhost:7777
 - nrf_registry_query     — query NRF for registered NF instances
 
 ## Developer utilities
-- `mcp-curl` — shell script to inspect the running MCP server without a client
+- `mcp-tools` — shell script to inspect the running MCP server without a client
   - default: table view of all tools (name + first sentence of description)
   - `--tool <name>` — full description and parameter table for one tool
   - `--schema <name>` — raw JSON inputSchema for one tool

@@ -460,7 +460,7 @@ if __name__ == "__main__":
         mcp.run(transport="stdio")
     elif args.transport == "all":
         # Serve SSE (/sse, /messages) and streamable-http (/mcp) on one port
-        # so ollmcp and mcp-curl both work without switching transports.
+        # so ollmcp and mcp-tools both work without switching transports.
         # Each sub-app has its own lifespan; preserve both via a dispatcher.
         _sse_app  = mcp.sse_app()
         _http_app = mcp.streamable_http_app()

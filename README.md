@@ -115,7 +115,7 @@ The server exposes **both transports on port 8080** simultaneously — no config
 | Transport | Endpoint | Client |
 |-----------|----------|--------|
 | SSE | `http://<host>:8080/sse` | ollmcp, Claude Desktop |
-| Streamable HTTP | `http://<host>:8080/mcp` | mcp-curl, any HTTP client |
+| Streamable HTTP | `http://<host>:8080/mcp` | mcp-tools, any HTTP client |
 
 ### ollmcp (Ollama)
 
@@ -155,13 +155,13 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### mcp-curl (quick tool inspection)
+### mcp-tools (quick tool inspection)
 
 ```bash
-./mcp-curl                               # table of all tools (name + description)
-./mcp-curl --tool get_ue_trace           # full description + parameter table for one tool
-./mcp-curl --schema nf_lifecycle         # raw JSON inputSchema for one tool
-./mcp-curl http://192.168.1.10:8080/mcp  # remote server
+./mcp-tools                               # table of all tools (name + description)
+./mcp-tools --tool get_ue_trace           # full description + parameter table for one tool
+./mcp-tools --schema nf_lifecycle         # raw JSON inputSchema for one tool
+./mcp-tools http://192.168.1.10:8080/mcp  # remote server
 ```
 
 Set `MCP_AUTH_TOKEN` in the environment to authenticate against a token-protected server.
@@ -251,7 +251,7 @@ open5gs-mcp/
 ├── server.yaml            # server + security configuration (all defaults off)
 ├── open5gs-mcp            # CLI: start/stop/restart/status/logs/install/uninstall
 ├── open5gs-mcp.service    # systemd unit (Restart=always, clean port release on stop)
-├── mcp-curl               # HTTP tool inspector (list / --tool / --schema)
+├── mcp-tools               # HTTP tool inspector (list / --tool / --schema)
 ├── ue-trace               # Shell wrapper for get_ue_trace
 └── ollmcp-servers.json    # ready-made ollmcp server config
 ```
