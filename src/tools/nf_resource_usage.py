@@ -79,12 +79,14 @@ def nf_resource_usage(
         }
     """
     if not (0.1 <= sample_interval <= 10.0):
-        return {"ok": False, "error": "sample_interval must be between 0.1 and 10.0 seconds"}
+        return {"summary": "Error: sample_interval must be between 0.1 and 10.0 seconds.",
+                "detail": {"ok": False, "error": "sample_interval must be between 0.1 and 10.0 seconds"}}
 
     target_nfs = nfs if nfs else list(_NFS)
     for n in target_nfs:
         if n not in _VALID_MONITOR_NFS:
-            return {"ok": False, "error": f"Invalid NF '{n}'. Valid: {sorted(_VALID_MONITOR_NFS)}"}
+            _e = f"Invalid NF '{n}'. Valid: {sorted(_VALID_MONITOR_NFS)}"
+            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     # Resolve PIDs
     pid_map: dict[str, int | None] = {nf: _get_nf_pid(nf) for nf in target_nfs}
@@ -205,12 +207,17 @@ def nf_resource_usage(
         ),
     }
 
+    _summary = (f"Sampled {len(running)} of {len(target_nfs)} NF(s) running; "
+                f"total CPU {total_cpu}%, RSS {total_rss} MB.")
     return {
-        "ok": True,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "sample_interval_s": sample_interval,
-        "nfs": nf_data,
-        "aggregates": aggregates,
-        "system": system,
-        "open5gs_share": open5gs_share,
+        "summary": _summary,
+        "detail": {
+            "ok": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "sample_interval_s": sample_interval,
+            "nfs": nf_data,
+            "aggregates": aggregates,
+            "system": system,
+            "open5gs_share": open5gs_share,
+        },
     }

@@ -7,6 +7,7 @@ import psutil
 
 from tools.nf_resource_usage import nf_resource_usage
 from tools.system_health_snapshot import _NFS
+from conftest import unwrap
 
 
 # ── psutil mock helpers ────────────────────────────────────────────────────────
@@ -49,20 +50,20 @@ def _make_disk_io(read=1000, write=500):
 @pytest.mark.unit
 class TestValidation:
     def test_sample_interval_too_low(self):
-        r = nf_resource_usage(sample_interval=0.0)
+        r = unwrap(nf_resource_usage(sample_interval=0.0))
         assert r["ok"] is False
 
     def test_sample_interval_too_high(self):
-        r = nf_resource_usage(sample_interval=11.0)
+        r = unwrap(nf_resource_usage(sample_interval=11.0))
         assert r["ok"] is False
 
     def test_invalid_nf_name(self):
-        r = nf_resource_usage(nfs=["bogus"])
+        r = unwrap(nf_resource_usage(nfs=["bogus"]))
         assert r["ok"] is False
         assert "bogus" in r["error"]
 
     def test_invalid_nf_in_list(self):
-        r = nf_resource_usage(nfs=["amf", "fake_nf"])
+        r = unwrap(nf_resource_usage(nfs=["amf", "fake_nf"]))
         assert r["ok"] is False
 
 
@@ -85,7 +86,7 @@ class TestHappyPath:
         mock_cpu_pct.return_value = 10.0
         mock_disk.return_value = _make_disk_io()
 
-        r = nf_resource_usage(nfs=["amf"], sample_interval=0.1)
+        r = unwrap(nf_resource_usage(nfs=["amf"], sample_interval=0.1))
         assert r["ok"] is True
         nf = r["nfs"]["amf"]
         assert nf["status"] == "running"
@@ -108,7 +109,7 @@ class TestHappyPath:
         mock_cpu_pct.return_value = 5.0
         mock_disk.return_value = _make_disk_io()
 
-        r = nf_resource_usage(nfs=["amf"], sample_interval=0.1)
+        r = unwrap(nf_resource_usage(nfs=["amf"], sample_interval=0.1))
         assert r["ok"] is True
         assert r["nfs"]["amf"]["status"] == "not_running"
         assert r["nfs"]["amf"]["pid"] is None
@@ -128,7 +129,7 @@ class TestHappyPath:
         mock_cpu_pct.return_value = 20.0
         mock_disk.return_value = _make_disk_io()
 
-        r = nf_resource_usage(nfs=["amf"], sample_interval=0.1)
+        r = unwrap(nf_resource_usage(nfs=["amf"], sample_interval=0.1))
         assert r["ok"] is True
         for key in ("timestamp", "sample_interval_s", "nfs", "aggregates", "system", "open5gs_share"):
             assert key in r, f"missing key: {key}"
@@ -172,7 +173,7 @@ class TestHappyPath:
         mock_cpu_pct.return_value = 0.0
         mock_disk.return_value = _make_disk_io()
 
-        r = nf_resource_usage(sample_interval=0.1)
+        r = unwrap(nf_resource_usage(sample_interval=0.1))
         assert r["ok"] is True
         assert set(r["nfs"].keys()) == set(_NFS)
 
@@ -193,7 +194,7 @@ class TestHappyPath:
         mock_cpu_pct.return_value = 5.0
         mock_disk.return_value = _make_disk_io()
 
-        r = nf_resource_usage(nfs=["upf"], sample_interval=0.1)
+        r = unwrap(nf_resource_usage(nfs=["upf"], sample_interval=0.1))
         assert r["ok"] is True
         nf = r["nfs"]["upf"]
         assert nf["status"] == "running"

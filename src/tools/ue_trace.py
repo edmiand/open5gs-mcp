@@ -362,13 +362,15 @@ def get_ue_trace(
     try:
         full_supi, bare_imsi = _normalize_supi_fn(supi)
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}
 
     if not (1 <= time_window_minutes <= 1440):
-        return {"ok": False, "error": "time_window_minutes must be between 1 and 1440"}
+        return {"summary": "Error: time_window_minutes must be between 1 and 1440.",
+                "detail": {"ok": False, "error": "time_window_minutes must be between 1 and 1440"}}
 
     if not (0 <= window_padding_seconds <= 60):
-        return {"ok": False, "error": "window_padding_seconds must be between 0 and 60"}
+        return {"summary": "Error: window_padding_seconds must be between 0 and 60.",
+                "detail": {"ok": False, "error": "window_padding_seconds must be between 0 and 60"}}
 
     _valid_nfs = _TRACE_NFS + ["nrf"]
     if include_nfs is None:
@@ -377,7 +379,8 @@ def get_ue_trace(
         nfs_to_search = [n.lower() for n in include_nfs]
         invalid = [n for n in nfs_to_search if n not in _valid_nfs]
         if invalid:
-            return {"ok": False, "error": f"Unknown NF(s): {invalid}. Valid: {_valid_nfs}"}
+            _e = f"Unknown NF(s): {invalid}. Valid: {_valid_nfs}"
+            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     if include_nrf and "nrf" not in nfs_to_search:
         nfs_to_search = nfs_to_search + ["nrf"]
@@ -533,7 +536,14 @@ def get_ue_trace(
         f"    participant {p}" for p in active_participants
     )
 
-    result: dict = {
+    _reg = "succeeded" if registration_success else "not seen"
+    _pdu = "established" if pdu_session_success else "not established"
+    _summary_str = (
+        f"Trace for {full_supi}: {total_events} event(s) found, "
+        f"registration {_reg}, PDU session {_pdu}."
+    )
+
+    detail: dict = {
         "ok": True,
         "supi": full_supi,
         "time_range": {
@@ -551,12 +561,12 @@ def get_ue_trace(
         "mermaid_hint": mermaid_hint,
     }
     if total_events > _MAX_EVENTS:
-        result["events_truncated"] = (
+        detail["events_truncated"] = (
             f"Showing first {_MAX_EVENTS // 2} and last {_MAX_EVENTS // 2} "
             f"of {total_events} events"
         )
 
     if nf_errors:
-        result["nf_errors"] = nf_errors
+        detail["nf_errors"] = nf_errors
 
-    return result
+    return {"summary": _summary_str, "detail": detail}

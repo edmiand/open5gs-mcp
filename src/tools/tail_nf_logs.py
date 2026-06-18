@@ -173,17 +173,17 @@ def tail_nf_logs(
 
     invalid = [n for n in nf_list if n not in _ALL_NFS]
     if invalid:
-        return {
-            "ok": False,
-            "error": f"Unknown NF(s): {invalid}. Valid: {_ALL_NFS}",
-        }
+        _e = f"Unknown NF(s): {invalid}. Valid: {_ALL_NFS}"
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     if not (1 <= lines <= 500):
-        return {"ok": False, "error": "lines must be between 1 and 500"}
+        return {"summary": "Error: lines must be between 1 and 500.",
+                "detail": {"ok": False, "error": "lines must be between 1 and 500"}}
 
     level = level.lower()
     if level not in {"debug", "info", "warn", "warning", "error"}:
-        return {"ok": False, "error": "level must be one of: debug info warn error"}
+        return {"summary": "Error: level must be one of: debug info warn error.",
+                "detail": {"ok": False, "error": "level must be one of: debug info warn error"}}
 
     # Compile grep pattern
     pattern: re.Pattern | None = None
@@ -191,13 +191,14 @@ def tail_nf_logs(
         try:
             pattern = re.compile(grep, re.IGNORECASE)
         except re.error as exc:
-            return {"ok": False, "error": f"Invalid grep pattern: {exc}"}
+            _e = f"Invalid grep pattern: {exc}"
+            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     # Parse since
     try:
         since_dt = _parse_since(since)
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}
 
     min_level = _min_level_int(level)
 
@@ -245,7 +246,7 @@ def tail_nf_logs(
         and since_dt < earliest_window
     )
 
-    result: dict = {
+    detail: dict = {
         "ok": True,
         "query": {
             "nf":    nf_list,
@@ -259,8 +260,10 @@ def tail_nf_logs(
         "nf_counts": nf_counts,
     }
     if truncated:
-        result["truncated"] = True
-        result["earliest_available"] = earliest_window.strftime("%m/%d %H:%M:%S")
+        detail["truncated"] = True
+        detail["earliest_available"] = earliest_window.strftime("%m/%d %H:%M:%S")
     if errors:
-        result["errors"] = errors
-    return result
+        detail["errors"] = errors
+    _summary = (f"Returned {len(output)} of {total_matched} matched log line(s) "
+                f"from {len(nf_list)} NF(s).")
+    return {"summary": _summary, "detail": detail}

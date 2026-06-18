@@ -85,35 +85,45 @@ def subscriber_update_slices(imsi: str, slices: list) -> dict:
 	"""
 	norm = normalize_imsi(imsi)
 	if norm is None:
-		return {"ok": False, "error": f"Invalid IMSI '{imsi}'. Expected 10-15 digits or 'imsi-<digits>'."}
+		_e = f"Invalid IMSI '{imsi}'. Expected 10-15 digits or 'imsi-<digits>'."
+		return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 	if not isinstance(slices, list):
-		return {"ok": False, "error": "slices must be a list"}
+		return {"summary": "Error: slices must be a list.",
+				"detail": {"ok": False, "error": "slices must be a list"}}
 
 	if not slices:
-		return {"ok": False, "error": "slices list cannot be empty; at least one slice with one session is required"}
+		_e = "slices list cannot be empty; at least one slice with one session is required"
+		return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 	try:
 		col = get_subscribers_col()
 		existing = col.find_one({"imsi": norm})
 		if existing is None:
-			return {"ok": False, "error": f"Subscriber {norm} not found"}
+			_e = f"Subscriber {norm} not found"
+			return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 		# Validate that each slice has at least one session with a name
 		for i, slice_obj in enumerate(slices):
 			if not isinstance(slice_obj, dict):
-				return {"ok": False, "error": f"slice[{i}] must be a dict"}
+				_e = f"slice[{i}] must be a dict"
+				return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 			if "sst" not in slice_obj:
-				return {"ok": False, "error": f"slice[{i}] missing required field 'sst'"}
+				_e = f"slice[{i}] missing required field 'sst'"
+				return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 			if "session" not in slice_obj or not isinstance(slice_obj["session"], list):
-				return {"ok": False, "error": f"slice[{i}] missing or invalid 'session' array"}
+				_e = f"slice[{i}] missing or invalid 'session' array"
+				return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 			if not slice_obj["session"]:
-				return {"ok": False, "error": f"slice[{i}].session cannot be empty; at least one session is required"}
+				_e = f"slice[{i}].session cannot be empty; at least one session is required"
+				return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 			for j, session in enumerate(slice_obj["session"]):
 				if not isinstance(session, dict):
-					return {"ok": False, "error": f"slice[{i}].session[{j}] must be a dict"}
+					_e = f"slice[{i}].session[{j}] must be a dict"
+					return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 				if "name" not in session:
-					return {"ok": False, "error": f"slice[{i}].session[{j}] missing required field 'name' (DNN)"}
+					_e = f"slice[{i}].session[{j}] missing required field 'name' (DNN)"
+					return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 		# Update slices (replace entire array)
 		merged = serialize(existing)
@@ -123,9 +133,11 @@ def subscriber_update_slices(imsi: str, slices: list) -> dict:
 
 		# Fetch and return updated doc
 		updated = col.find_one({"imsi": norm})
-		return {"ok": True, "subscriber": redact(serialize(updated))}
+		return {"summary": f"Slice configuration updated for subscriber {norm}.",
+				"detail": {"ok": True, "subscriber": redact(serialize(updated))}}
 
 	except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
-		return {"ok": False, "error": f"MongoDB connection failed: {exc}"}
+		_e = f"MongoDB connection failed: {exc}"
+		return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 	except Exception as exc:
-		return {"ok": False, "error": str(exc)}
+		return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}

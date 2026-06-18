@@ -23,6 +23,10 @@ _LIFECYCLE_LINE_RE = re.compile(r"^(\w+):\s+(.+)$")
 _PID_RE = re.compile(r"\(pid (\d+)\)")
 
 
+def _wrap(summary: str, detail: dict) -> dict:
+    return {"summary": summary, "detail": detail}
+
+
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
@@ -113,10 +117,11 @@ def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
 
     err = _validate(action, nf_list)
     if err:
-        return {"ok": False, "error": err}
+        return _wrap(f"Error: {err}", {"ok": False, "error": err})
 
     if not _SCRIPT.exists():
-        return {"ok": False, "error": f"Control script not found: {_SCRIPT}"}
+        _e = f"Control script not found: {_SCRIPT}"
+        return _wrap(f"Error: {_e}", {"ok": False, "error": _e})
 
     try:
         proc = subprocess.run(
@@ -127,9 +132,10 @@ def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
             start_new_session=True,
         )
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "open5gs-ctl.sh timed out after 60 s"}
+        return _wrap("Error: open5gs-ctl.sh timed out after 60 s",
+                     {"ok": False, "error": "open5gs-ctl.sh timed out after 60 s"})
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return _wrap(f"Error: {exc}", {"ok": False, "error": str(exc)})
 
     stdout = proc.stdout
     stderr = proc.stderr.strip()
@@ -141,14 +147,25 @@ def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
 
     has_errors = any(v.get("result") == "error" for v in nfs.values())
 
-    response: dict = {
+    if action == "status":
+        running = sum(1 for v in nfs.values() if v.get("status") == "running")
+        _summary = f"{len(nfs)} NF(s) queried: {running} running, {len(nfs) - running} stopped."
+    else:
+        err_nfs = [n for n, v in nfs.items() if v.get("result") == "error"]
+        _summary = (
+            f"{action.capitalize()} completed with errors on: {', '.join(err_nfs)}."
+            if err_nfs else f"{action.capitalize()} succeeded for {len(nfs)} NF(s)."
+        )
+
+    detail: dict = {
         "ok": proc.returncode == 0 and not has_errors,
         "action": action,
         "nfs": nfs,
     }
     if stderr:
-        response["stderr"] = stderr
+        detail["stderr"] = stderr
     if not nfs and proc.returncode != 0:
-        response["error"] = f"script exited {proc.returncode} with no parseable output"
-        response["raw_output"] = stdout.strip()
-    return response
+        detail["error"] = f"script exited {proc.returncode} with no parseable output"
+        detail["raw_output"] = stdout.strip()
+        _summary = f"Script exited {proc.returncode} with no parseable output."
+    return _wrap(_summary, detail)

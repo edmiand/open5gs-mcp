@@ -176,3 +176,15 @@ def completed(stdout: str = "", returncode: int = 0, stderr: str = "") -> MagicM
 @pytest.fixture
 def make_proc():
     return completed
+
+
+# ── Tool response helper ──────────────────────────────────────────────────────
+
+def unwrap(result: dict) -> dict:
+    """Assert tool result has a string summary, then return its detail dict."""
+    assert "summary" in result, f"response missing 'summary' key: {list(result.keys())}"
+    assert isinstance(result["summary"], str), (
+        f"summary must be a str, got {type(result['summary'])!r}: {result['summary']!r}"
+    )
+    assert "detail" in result, f"response missing 'detail' key: {list(result.keys())}"
+    return result["detail"]

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.nf_lifecycle import nf_lifecycle, _parse_status, _parse_lifecycle
-from conftest import completed
+from conftest import completed, unwrap
 
 
 # ── fixture: a real (temp) script file so _SCRIPT.exists() is True ────────────
@@ -76,23 +76,23 @@ class TestParsers:
 @pytest.mark.unit
 class TestValidation:
     def test_invalid_action(self):
-        r = nf_lifecycle(action="nuke")
+        r = unwrap(nf_lifecycle(action="nuke"))
         assert r["ok"] is False
         assert "nuke" in r["error"]
 
     def test_invalid_nf(self):
-        r = nf_lifecycle(action="status", nf=["bogus"])
+        r = unwrap(nf_lifecycle(action="status", nf=["bogus"]))
         assert r["ok"] is False
         assert "bogus" in r["error"]
 
     def test_invalid_nf_in_mixed_list(self):
-        r = nf_lifecycle(action="status", nf=["amf", "invalid"])
+        r = unwrap(nf_lifecycle(action="status", nf=["amf", "invalid"]))
         assert r["ok"] is False
 
     def test_script_not_found(self, tmp_path, monkeypatch):
         import tools.nf_lifecycle as mod
         monkeypatch.setattr(mod, "_SCRIPT", tmp_path / "nonexistent.sh")
-        r = nf_lifecycle(action="status")
+        r = unwrap(nf_lifecycle(action="status"))
         assert r["ok"] is False
         assert "not found" in r["error"]
 
@@ -108,7 +108,7 @@ class TestStatus:
             "smf running 5678 0:01:00\n"
             "upf stopped\n"
         ))
-        r = nf_lifecycle(action="status")
+        r = unwrap(nf_lifecycle(action="status"))
         assert r["ok"] is True
         assert r["action"] == "status"
         assert "amf" in r["nfs"]
@@ -119,27 +119,27 @@ class TestStatus:
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_status_single_nf(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf running 1234 0:00:30\n")
-        r = nf_lifecycle(action="status", nf="amf")
+        r = unwrap(nf_lifecycle(action="status", nf="amf"))
         assert r["ok"] is True
         assert "amf" in r["nfs"]
 
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_status_nf_as_list(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf running 1 0:00:01\nsmf running 2 0:00:01\n")
-        r = nf_lifecycle(action="status", nf=["amf", "smf"])
+        r = unwrap(nf_lifecycle(action="status", nf=["amf", "smf"]))
         assert r["ok"] is True
 
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_stderr_included_when_present(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf stopped\n", stderr="some warning")
-        r = nf_lifecycle(action="status")
+        r = unwrap(nf_lifecycle(action="status"))
         assert "stderr" in r
         assert r["stderr"] == "some warning"
 
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_no_stderr_key_when_empty(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf stopped\n", stderr="")
-        r = nf_lifecycle(action="status")
+        r = unwrap(nf_lifecycle(action="status"))
         assert "stderr" not in r
 
 
@@ -150,7 +150,7 @@ class TestLifecycle:
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_start(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf: started (pid 9999)\n")
-        r = nf_lifecycle(action="start", nf="amf")
+        r = unwrap(nf_lifecycle(action="start", nf="amf"))
         assert r["ok"] is True
         assert r["nfs"]["amf"]["result"] == "started"
         assert r["nfs"]["amf"]["pid"] == 9999
@@ -158,26 +158,26 @@ class TestLifecycle:
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_stop(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf: stopped\n")
-        r = nf_lifecycle(action="stop", nf="amf")
+        r = unwrap(nf_lifecycle(action="stop", nf="amf"))
         assert r["ok"] is True
         assert r["nfs"]["amf"]["result"] == "stopped"
 
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_restart(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf: started (pid 1111)\n")
-        r = nf_lifecycle(action="restart", nf="amf")
+        r = unwrap(nf_lifecycle(action="restart", nf="amf"))
         assert r["ok"] is True
 
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_lifecycle_error_marks_ok_false(self, mock_run, script):
         mock_run.return_value = completed(stdout="amf: ERROR - not running\n", returncode=1)
-        r = nf_lifecycle(action="stop", nf="amf")
+        r = unwrap(nf_lifecycle(action="stop", nf="amf"))
         assert r["ok"] is False
         assert r["nfs"]["amf"]["result"] == "error"
 
     @patch("tools.nf_lifecycle.subprocess.run")
     def test_subprocess_timeout(self, mock_run, script):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="bash", timeout=60)
-        r = nf_lifecycle(action="status")
+        r = unwrap(nf_lifecycle(action="status"))
         assert r["ok"] is False
         assert "timed out" in r["error"]

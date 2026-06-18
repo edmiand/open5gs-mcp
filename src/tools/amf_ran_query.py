@@ -74,7 +74,7 @@ def amf_ran_query() -> dict:
     base = _amf_sbi_url()
     data, err = _oam_get(f"{base}/namf-oam/v1/plmns")
     if data is None:
-        return {"ok": False, "error": err}
+        return {"summary": f"Error: {err}", "detail": {"ok": False, "error": err}}
 
     gnb_items, gnbs_status = _fetch_gnb_info(_metrics_url("amf"))
 
@@ -89,12 +89,20 @@ def amf_ran_query() -> dict:
         for g in gnb_items
     ]
 
+    _connected = data.get("connected_gnbs", 0)
+    _registered = data.get("registered_ues", 0)
+    _plmns = data.get("total_plmns", 0)
+    _summary = (f"AMF reports {_connected} connected gNB(s) and {_registered} "
+                f"registered UE(s) across {_plmns} PLMN(s).")
     return {
-        "ok":             True,
-        "connected_gnbs": data.get("connected_gnbs", 0),
-        "registered_ues": data.get("registered_ues", 0),
-        "total_plmns":    data.get("total_plmns", 0),
-        "plmns":          data.get("plmns", []),
-        "gnbs":           gnbs,
-        "gnbs_status":    gnbs_status,
+        "summary": _summary,
+        "detail": {
+            "ok":             True,
+            "connected_gnbs": _connected,
+            "registered_ues": _registered,
+            "total_plmns":    _plmns,
+            "plmns":          data.get("plmns", []),
+            "gnbs":           gnbs,
+            "gnbs_status":    gnbs_status,
+        },
     }

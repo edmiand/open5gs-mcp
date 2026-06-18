@@ -8,6 +8,23 @@ from ._subscriber_util import (
     DEFAULT_SUBSCRIBER,
 )
 
+def _wrap(action: str, result: dict) -> dict:
+    if not result.get("ok"):
+        summary = f"Error: {result.get('error', 'unknown error')}"
+    elif action == "read":
+        summary = f"Subscriber {result['subscriber']['imsi']} found."
+    elif action == "list":
+        summary = f"Listed {result['returned']} of {result['count']} subscriber(s)."
+    elif action == "create":
+        summary = f"Subscriber {result['subscriber']['imsi']} created."
+    else:  # delete
+        summary = (
+            f"Subscriber {result['imsi']} deleted." if result.get("deleted")
+            else f"Subscriber {result['imsi']} not found; nothing deleted."
+        )
+    return {"summary": summary, "detail": result}
+
+
 _SAFE_LIST_FILTER_KEYS = frozenset({
     "subscriber_status",
     "network_access_mode",
@@ -64,14 +81,15 @@ def subscriber(
         error:  {"ok": False, "error": str}
     """
     if action == "read":
-        return _read(imsi)
+        return _wrap("read",   _read(imsi))
     if action == "list":
-        return _list(limit, filter)
+        return _wrap("list",   _list(limit, filter))
     if action == "create":
-        return _create(imsi, data)
+        return _wrap("create", _create(imsi, data))
     if action == "delete":
-        return _delete(imsi)
-    return {"ok": False, "error": f"Unknown action '{action}'. Valid: read, list, create, delete"}
+        return _wrap("delete", _delete(imsi))
+    _e = f"Unknown action '{action}'. Valid: read, list, create, delete"
+    return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 
 def _read(imsi: str | None) -> dict:

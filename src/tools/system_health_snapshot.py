@@ -128,7 +128,8 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
         }
     """
     if not (1 <= log_minutes <= 1440):
-        return {"ok": False, "error": "log_minutes must be between 1 and 1440"}
+        return {"summary": "Error: log_minutes must be between 1 and 1440.",
+                "detail": {"ok": False, "error": "log_minutes must be between 1 and 1440"}}
 
     nfs_result: dict[str, dict] = {}
     green = yellow = red = 0
@@ -169,21 +170,29 @@ def system_health_snapshot(log_minutes: int = 15) -> dict:
         "critical"
     )
 
+    _summary_str = (
+        f"System is {overall}: {green}/{len(_NFS)} NFs green, "
+        f"MongoDB {mongodb['status']}, TUN {tun['status']}, "
+        f"{ran.get('gnbs_connected', 0)} gNB(s) connected."
+    )
     return {
-        "ok": True,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "nfs": nfs_result,
-        "mongodb": mongodb,
-        "tun": tun,
-        "ran": ran,
-        "summary": {
-            "overall":    overall,
-            "nfs_green":  green,
-            "nfs_yellow": yellow,
-            "nfs_red":    red,
-            "nfs_total":  len(_NFS),
-            "mongodb":    mongodb["status"],
-            "tun":        tun["status"],
-            "ran":        ran["status"],
+        "summary": _summary_str,
+        "detail": {
+            "ok": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "nfs": nfs_result,
+            "mongodb": mongodb,
+            "tun": tun,
+            "ran": ran,
+            "summary": {
+                "overall":    overall,
+                "nfs_green":  green,
+                "nfs_yellow": yellow,
+                "nfs_red":    red,
+                "nfs_total":  len(_NFS),
+                "mongodb":    mongodb["status"],
+                "tun":        tun["status"],
+                "ran":        ran["status"],
+            },
         },
     }

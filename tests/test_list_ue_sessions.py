@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from tools.list_ue_sessions import list_ue_sessions
-from conftest import http_response, oam_page
+from conftest import http_response, oam_page, unwrap
 
 
 # ── sample data ───────────────────────────────────────────────────────────────
@@ -47,12 +47,12 @@ def _make_oam_get(amf_data, smf_data):
 @pytest.mark.unit
 class TestValidation:
     def test_invalid_imsi_filter(self):
-        r = list_ue_sessions(imsi_filter="not-digits")
+        r = unwrap(list_ue_sessions(imsi_filter="not-digits"))
         assert r["ok"] is False
         assert "imsi_filter" in r["error"].lower() or "Invalid" in r["error"]
 
     def test_imsi_filter_non_digit(self):
-        r = list_ue_sessions(imsi_filter="abc123")
+        r = unwrap(list_ue_sessions(imsi_filter="abc123"))
         assert r["ok"] is False
 
 
@@ -63,7 +63,7 @@ class TestHappyPath:
     @patch("tools.list_ue_sessions.httpx.get")
     def test_single_ue_returned(self, mock_get):
         mock_get.side_effect = _make_oam_get([_AMF_UE], [_SMF_UE])
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         assert r["ue_count"] == 1
         assert r["ues"][0]["supi"] == "imsi-999700000000001"
@@ -72,7 +72,7 @@ class TestHappyPath:
     @patch("tools.list_ue_sessions.httpx.get")
     def test_pdu_sessions_merged(self, mock_get):
         mock_get.side_effect = _make_oam_get([_AMF_UE], [_SMF_UE])
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         sess = r["ues"][0]["pdu_sessions"][0]
         # SMF provides the IP
@@ -82,7 +82,7 @@ class TestHappyPath:
     @patch("tools.list_ue_sessions.httpx.get")
     def test_imsi_filter_matches(self, mock_get):
         mock_get.side_effect = _make_oam_get([_AMF_UE], [_SMF_UE])
-        r = list_ue_sessions(imsi_filter="9997000000000")
+        r = unwrap(list_ue_sessions(imsi_filter="9997000000000"))
         assert r["ok"] is True
         assert r["ue_count"] == 1
 
@@ -90,21 +90,21 @@ class TestHappyPath:
     def test_imsi_filter_no_match(self, mock_get):
         mock_get.side_effect = _make_oam_get([_AMF_UE], [_SMF_UE])
         # 10-digit prefix that doesn't match "999700000000001"
-        r = list_ue_sessions(imsi_filter="1111000000")
+        r = unwrap(list_ue_sessions(imsi_filter="1111000000"))
         assert r["ok"] is True
         assert r["ue_count"] == 0
 
     @patch("tools.list_ue_sessions.httpx.get")
     def test_imsi_filter_supi_format(self, mock_get):
         mock_get.side_effect = _make_oam_get([_AMF_UE], [_SMF_UE])
-        r = list_ue_sessions(imsi_filter="imsi-9997000000000")
+        r = unwrap(list_ue_sessions(imsi_filter="imsi-9997000000000"))
         assert r["ok"] is True
         assert r["ue_count"] == 1
 
     @patch("tools.list_ue_sessions.httpx.get")
     def test_empty_core_no_ues(self, mock_get):
         mock_get.side_effect = _make_oam_get([], [])
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         assert r["ue_count"] == 0
         assert r["ues"] == []
@@ -112,7 +112,7 @@ class TestHappyPath:
     @patch("tools.list_ue_sessions.httpx.get")
     def test_output_schema(self, mock_get):
         mock_get.side_effect = _make_oam_get([_AMF_UE], [_SMF_UE])
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         assert "timestamp" in r
         assert "ue_count" in r
@@ -127,7 +127,7 @@ class TestHappyPath:
         idle_ue = {**_AMF_UE, "pdu_sessions": []}
         idle_smf = {**_SMF_UE, "ue_activity": "idle", "pdu": []}
         mock_get.side_effect = _make_oam_get([idle_ue], [idle_smf])
-        r = list_ue_sessions(include_idle=False)
+        r = unwrap(list_ue_sessions(include_idle=False))
         assert r["ok"] is True
         assert r["ue_count"] == 0
 
@@ -139,7 +139,7 @@ class TestErrorHandling:
     @patch("tools.list_ue_sessions.httpx.get")
     def test_amf_unreachable_returns_ok(self, mock_get):
         mock_get.side_effect = httpx.ConnectError("refused")
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         assert r["ue_count"] == 0
         assert r["sources"]["amf"] == "unreachable"
@@ -151,7 +151,7 @@ class TestErrorHandling:
                 raise httpx.ConnectError("refused")
             return http_response(oam_page([_AMF_UE]))
         mock_get.side_effect = _get
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         assert r["ue_count"] == 1  # AMF data still returned
         assert r["sources"]["smf"] == "unreachable"
@@ -161,6 +161,6 @@ class TestErrorHandling:
     @patch("tools.list_ue_sessions.httpx.get")
     def test_timeout_reported_in_sources(self, mock_get):
         mock_get.side_effect = httpx.TimeoutException("timeout")
-        r = list_ue_sessions()
+        r = unwrap(list_ue_sessions())
         assert r["ok"] is True
         assert r["sources"]["amf"] == "timeout"

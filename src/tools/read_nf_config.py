@@ -77,44 +77,44 @@ def read_nf_config(nf: str, path: str | None = None) -> dict:
     """
     nf = nf.lower().strip()
     if nf not in VALID_NFS:
-        return {
-            "ok": False,
-            "error": f"Unknown NF '{nf}'. Valid: {sorted(VALID_NFS)}",
-        }
+        _e = f"Unknown NF '{nf}'. Valid: {sorted(VALID_NFS)}"
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
     if nf in _NFS_WITHOUT_YAML:
-        return {
-            "ok": False,
-            "error": f"'{nf}' has no YAML config (it is managed by Node.js). "
-                     f"NFs with YAML configs: {sorted(VALID_NFS - _NFS_WITHOUT_YAML)}",
-        }
+        _e = (f"'{nf}' has no YAML config (it is managed by Node.js). "
+              f"NFs with YAML configs: {sorted(VALID_NFS - _NFS_WITHOUT_YAML)}")
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     cfg_path = _CONFIG_DIR / f"{nf}.yaml"
     if not cfg_path.exists():
-        return {
-            "ok": False,
-            "error": f"Config file not found: {cfg_path}",
-        }
+        _e = f"Config file not found: {cfg_path}"
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     try:
         with open(cfg_path) as f:
             data = yaml.safe_load(f)
     except yaml.YAMLError as exc:
-        return {"ok": False, "error": f"YAML parse error in {cfg_path}: {exc}"}
+        _e = f"YAML parse error in {cfg_path}: {exc}"
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
     except OSError as exc:
-        return {"ok": False, "error": f"Cannot read {cfg_path}: {exc}"}
+        _e = f"Cannot read {cfg_path}: {exc}"
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     if path:
         try:
             subtree = _resolve_path(data, path)
         except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}
     else:
         subtree = data
 
+    _path_clause = f" at path \"{path}\"" if path else ""
     return {
-        "ok": True,
-        "nf": nf,
-        "config_file": str(cfg_path),
-        "path": path,
-        "config": subtree,
+        "summary": f"Read {nf} config{_path_clause}.",
+        "detail": {
+            "ok": True,
+            "nf": nf,
+            "config_file": str(cfg_path),
+            "path": path,
+            "config": subtree,
+        },
     }

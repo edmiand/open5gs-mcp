@@ -6,7 +6,7 @@ import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 
 from tools.subscriber_update_profile import subscriber_update_profile
-from conftest import make_subscriber, make_mock_col
+from conftest import make_subscriber, make_mock_col, unwrap
 
 
 IMSI = "999700000000001"
@@ -17,28 +17,28 @@ IMSI = "999700000000001"
 @pytest.mark.unit
 class TestValidation:
     def test_invalid_imsi(self):
-        r = subscriber_update_profile(imsi="bad-imsi")
+        r = unwrap(subscriber_update_profile(imsi="bad-imsi"))
         assert r["ok"] is False
 
     def test_no_fields_supplied(self):
         # Need a real col lookup to get past IMSI validation, so mock it
         with patch("tools.subscriber_update_profile.get_subscribers_col") as mc:
             mc.return_value = make_mock_col([make_subscriber(IMSI)])
-            r = subscriber_update_profile(imsi=IMSI)
+            r = unwrap(subscriber_update_profile(imsi=IMSI))
         assert r["ok"] is False
         assert "No profile fields" in r["error"]
 
     def test_subscriber_not_found(self):
         with patch("tools.subscriber_update_profile.get_subscribers_col") as mc:
             mc.return_value = make_mock_col(docs=[])
-            r = subscriber_update_profile(imsi=IMSI, subscriber_status=0)
+            r = unwrap(subscriber_update_profile(imsi=IMSI, subscriber_status=0))
         assert r["ok"] is False
         assert "not found" in r["error"]
 
     def test_mongodb_error(self):
         with patch("tools.subscriber_update_profile.get_subscribers_col") as mc:
             mc.side_effect = ServerSelectionTimeoutError("timeout")
-            r = subscriber_update_profile(imsi=IMSI, subscriber_status=0)
+            r = unwrap(subscriber_update_profile(imsi=IMSI, subscriber_status=0))
         assert r["ok"] is False
         assert "MongoDB" in r["error"]
 
@@ -68,7 +68,7 @@ class TestHappyPath:
         updated = {**initial, "subscriber_status": 1}
         col = self._setup_col(initial, updated)
         mock_get_col.return_value = col
-        r = subscriber_update_profile(imsi=IMSI, subscriber_status=1)
+        r = unwrap(subscriber_update_profile(imsi=IMSI, subscriber_status=1))
         assert r["ok"] is True
         assert col.replace_one.called
 
@@ -77,10 +77,10 @@ class TestHappyPath:
         initial = make_subscriber(IMSI)
         col = self._setup_col(initial)
         mock_get_col.return_value = col
-        r = subscriber_update_profile(
+        r = unwrap(subscriber_update_profile(
             imsi=IMSI,
             ambr={"downlink": {"value": 100, "unit": 2}, "uplink": {"value": 50, "unit": 2}},
-        )
+        ))
         assert r["ok"] is True
 
     @patch("tools.subscriber_update_profile.get_subscribers_col")
@@ -88,7 +88,7 @@ class TestHappyPath:
         initial = make_subscriber(IMSI)
         col = self._setup_col(initial)
         mock_get_col.return_value = col
-        r = subscriber_update_profile(imsi=IMSI, msisdn=["+1234567890"])
+        r = unwrap(subscriber_update_profile(imsi=IMSI, msisdn=["+1234567890"]))
         assert r["ok"] is True
         sec = r["subscriber"]["security"]
         assert sec["k"] == "***"
@@ -99,5 +99,5 @@ class TestHappyPath:
         initial = make_subscriber(IMSI)
         col = self._setup_col(initial)
         mock_get_col.return_value = col
-        r = subscriber_update_profile(imsi=f"imsi-{IMSI}", subscriber_status=0)
+        r = unwrap(subscriber_update_profile(imsi=f"imsi-{IMSI}", subscriber_status=0))
         assert r["ok"] is True

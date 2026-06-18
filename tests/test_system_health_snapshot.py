@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from tools.system_health_snapshot import system_health_snapshot, _NFS
+from conftest import unwrap
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -39,11 +40,11 @@ _RAN_UNREACHABLE = {"status": "unreachable", "gnbs_connected": 0}
 @pytest.mark.unit
 class TestInputValidation:
     def test_log_minutes_zero(self):
-        r = system_health_snapshot(log_minutes=0)
+        r = unwrap(system_health_snapshot(log_minutes=0))
         assert r["ok"] is False
 
     def test_log_minutes_too_large(self):
-        r = system_health_snapshot(log_minutes=1441)
+        r = unwrap(system_health_snapshot(log_minutes=1441))
         assert r["ok"] is False
 
     def test_log_minutes_boundary_valid(self):
@@ -52,10 +53,10 @@ class TestInputValidation:
             patch("tools.system_health_snapshot._check_mongodb", return_value=_MONGODB_OK),
             patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK),
         ):
-            r = system_health_snapshot(log_minutes=1)
+            r = unwrap(system_health_snapshot(log_minutes=1))
             assert r["ok"] is True
 
-            r = system_health_snapshot(log_minutes=1440)
+            r = unwrap(system_health_snapshot(log_minutes=1440))
             assert r["ok"] is True
 
 
@@ -70,7 +71,7 @@ class TestOutputSchema:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_top_level_keys(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["ok"] is True
         assert "timestamp" in r
         assert "nfs" in r
@@ -86,7 +87,7 @@ class TestOutputSchema:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_nf_entry_keys(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         for nf_name, entry in r["nfs"].items():
             assert "status" in entry, f"{nf_name} missing status"
             assert "pid" in entry
@@ -99,7 +100,7 @@ class TestOutputSchema:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_summary_keys(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         summary = r["summary"]
         for key in ("overall", "nfs_green", "nfs_yellow", "nfs_red", "nfs_total", "mongodb", "tun", "ran"):
             assert key in summary
@@ -111,7 +112,7 @@ class TestOutputSchema:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_all_nfs_covered(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert set(r["nfs"].keys()) == set(_NFS)
 
 
@@ -123,7 +124,7 @@ class TestNFStatusClassification:
     @patch("tools.system_health_snapshot._check_mongodb", return_value=_MONGODB_OK)
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     def test_nf_down_is_red(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["ok"] is True
         for entry in r["nfs"].values():
             assert entry["status"] == "red"
@@ -136,7 +137,7 @@ class TestNFStatusClassification:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_clean_nfs_are_green(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["summary"]["nfs_green"] == len(_NFS)
         assert r["summary"]["nfs_red"] == 0
 
@@ -147,7 +148,7 @@ class TestNFStatusClassification:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_nf_with_recent_errors_is_yellow(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         for entry in r["nfs"].values():
             assert entry["status"] == "yellow"
         assert r["summary"]["nfs_yellow"] == len(_NFS)
@@ -159,7 +160,7 @@ class TestNFStatusClassification:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_nf_endpoint_unreachable_is_yellow(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         # Only AMF and SMF have info endpoints — they go yellow
         for nf_name in ("amf", "smf"):
             assert r["nfs"][nf_name]["status"] == "yellow"
@@ -171,7 +172,7 @@ class TestNFStatusClassification:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_recent_errors_list_is_strings(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         for entry in r["nfs"].values():
             assert isinstance(entry["recent_errors"], list)
             for item in entry["recent_errors"]:
@@ -189,14 +190,14 @@ class TestOverallHealth:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_healthy_when_all_green(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["summary"]["overall"] == "healthy"
 
     @patch("tools.system_health_snapshot._get_nf_pid", return_value=None)
     @patch("tools.system_health_snapshot._check_mongodb", return_value=_MONGODB_OK)
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     def test_critical_when_nfs_down(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["summary"]["overall"] == "critical"
 
     @patch("tools.system_health_snapshot._get_nf_pid", side_effect=_all_pids_up)
@@ -206,7 +207,7 @@ class TestOverallHealth:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_degraded_when_mongodb_down(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["summary"]["overall"] == "degraded"
         assert r["mongodb"]["status"] == "down"
 
@@ -222,7 +223,7 @@ class TestInfrastructure:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_MISSING)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_OK)
     def test_tun_missing_reported(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["tun"]["status"] == "missing"
         assert r["summary"]["tun"] == "missing"
 
@@ -230,7 +231,7 @@ class TestInfrastructure:
     @patch("tools.system_health_snapshot._check_mongodb", return_value=_MONGODB_OK)
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     def test_ran_skipped_when_amf_down(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         # AMF is down so ran check is skipped — should default to unreachable
         assert r["ran"]["status"] == "unreachable"
         assert r["ran"]["gnbs_connected"] == 0
@@ -242,6 +243,6 @@ class TestInfrastructure:
     @patch("tools.system_health_snapshot._check_tun", return_value=_TUN_OK)
     @patch("tools.system_health_snapshot._check_ran", return_value=_RAN_NO_GNB)
     def test_ran_no_gnbs_reported(self, *_):
-        r = system_health_snapshot()
+        r = unwrap(system_health_snapshot())
         assert r["ran"]["status"] == "no_gnbs"
         assert r["ran"]["gnbs_connected"] == 0

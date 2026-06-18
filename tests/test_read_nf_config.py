@@ -5,6 +5,7 @@ import yaml
 
 import tools.read_nf_config as mod
 from tools.read_nf_config import read_nf_config, _resolve_path
+from conftest import unwrap
 
 
 # ── fixture: redirect _CONFIG_DIR to tmp_path ─────────────────────────────────
@@ -77,24 +78,24 @@ class TestResolvePath:
 @pytest.mark.unit
 class TestValidation:
     def test_unknown_nf(self, config_dir):
-        r = read_nf_config(nf="bogus")
+        r = unwrap(read_nf_config(nf="bogus"))
         assert r["ok"] is False
         assert "bogus" in r["error"]
 
     def test_webui_no_yaml(self, config_dir):
-        r = read_nf_config(nf="webui")
+        r = unwrap(read_nf_config(nf="webui"))
         assert r["ok"] is False
         assert "Node.js" in r["error"]
 
     def test_config_file_not_found(self, config_dir):
         # config_dir is empty — no amf.yaml
-        r = read_nf_config(nf="amf")
+        r = unwrap(read_nf_config(nf="amf"))
         assert r["ok"] is False
         assert "not found" in r["error"]
 
     def test_yaml_parse_error(self, config_dir):
         (config_dir / "amf.yaml").write_text(":\t: invalid yaml {{{{", encoding="utf-8")
-        r = read_nf_config(nf="amf")
+        r = unwrap(read_nf_config(nf="amf"))
         assert r["ok"] is False
         assert "YAML" in r["error"]
 
@@ -105,7 +106,7 @@ class TestValidation:
 class TestHappyPath:
     def test_full_config(self, config_dir):
         write_yaml(config_dir, "amf", _AMF_CONFIG)
-        r = read_nf_config(nf="amf")
+        r = unwrap(read_nf_config(nf="amf"))
         assert r["ok"] is True
         assert r["nf"] == "amf"
         assert "config" in r
@@ -115,37 +116,37 @@ class TestHappyPath:
 
     def test_dot_path_subtree(self, config_dir):
         write_yaml(config_dir, "amf", _AMF_CONFIG)
-        r = read_nf_config(nf="amf", path="amf.sbi")
+        r = unwrap(read_nf_config(nf="amf", path="amf.sbi"))
         assert r["ok"] is True
         assert r["path"] == "amf.sbi"
         assert "server" in r["config"]
 
     def test_dot_path_scalar(self, config_dir):
         write_yaml(config_dir, "amf", _AMF_CONFIG)
-        r = read_nf_config(nf="amf", path="logger.level")
+        r = unwrap(read_nf_config(nf="amf", path="logger.level"))
         assert r["ok"] is True
         assert r["config"] == "info"
 
     def test_list_index_path(self, config_dir):
         write_yaml(config_dir, "amf", _AMF_CONFIG)
-        r = read_nf_config(nf="amf", path="amf.sbi.server.0")
+        r = unwrap(read_nf_config(nf="amf", path="amf.sbi.server.0"))
         assert r["ok"] is True
         assert r["config"]["port"] == 7777
 
     def test_nf_case_insensitive(self, config_dir):
         write_yaml(config_dir, "amf", _AMF_CONFIG)
-        r = read_nf_config(nf="AMF")
+        r = unwrap(read_nf_config(nf="AMF"))
         assert r["ok"] is True
         assert r["nf"] == "amf"
 
     def test_bad_path_key_returns_error(self, config_dir):
         write_yaml(config_dir, "amf", _AMF_CONFIG)
-        r = read_nf_config(nf="amf", path="amf.nonexistent")
+        r = unwrap(read_nf_config(nf="amf", path="amf.nonexistent"))
         assert r["ok"] is False
         assert "nonexistent" in r["error"] or "not found" in r["error"].lower()
 
     def test_config_file_path_in_response(self, config_dir):
         write_yaml(config_dir, "smf", {"smf": {}})
-        r = read_nf_config(nf="smf")
+        r = unwrap(read_nf_config(nf="smf"))
         assert r["ok"] is True
         assert "smf.yaml" in r["config_file"]

@@ -87,13 +87,15 @@ def subscriber_update_profile(
 	"""
 	norm = normalize_imsi(imsi)
 	if norm is None:
-		return {"ok": False, "error": f"Invalid IMSI '{imsi}'. Expected 10-15 digits or 'imsi-<digits>'."}
+		_e = f"Invalid IMSI '{imsi}'. Expected 10-15 digits or 'imsi-<digits>'."
+		return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 	try:
 		col = get_subscribers_col()
 		existing = col.find_one({"imsi": norm})
 		if existing is None:
-			return {"ok": False, "error": f"Subscriber {norm} not found"}
+			_e = f"Subscriber {norm} not found"
+			return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
 		# Build update data from supplied kwargs (skip None values)
 		update_data: dict = {}
@@ -123,7 +125,8 @@ def subscriber_update_profile(
 			update_data["subscribed_rau_tau_timer"] = subscribed_rau_tau_timer
 
 		if not update_data:
-			return {"ok": False, "error": "No profile fields supplied to update"}
+			return {"summary": "Error: No profile fields supplied to update.",
+					"detail": {"ok": False, "error": "No profile fields supplied to update"}}
 
 		# Deep merge into existing doc
 		merged = deep_merge(serialize(existing), update_data)
@@ -132,9 +135,11 @@ def subscriber_update_profile(
 
 		# Fetch and return updated doc
 		updated = col.find_one({"imsi": norm})
-		return {"ok": True, "subscriber": redact(serialize(updated))}
+		return {"summary": f"Profile updated for subscriber {norm}.",
+				"detail": {"ok": True, "subscriber": redact(serialize(updated))}}
 
 	except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
-		return {"ok": False, "error": f"MongoDB connection failed: {exc}"}
+		_e = f"MongoDB connection failed: {exc}"
+		return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 	except Exception as exc:
-		return {"ok": False, "error": str(exc)}
+		return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}

@@ -6,7 +6,7 @@ import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 
 from tools.subscriber import subscriber
-from conftest import make_subscriber, make_mock_col
+from conftest import make_subscriber, make_mock_col, unwrap
 
 
 IMSI = "999700000000001"
@@ -17,7 +17,7 @@ SUPI = f"imsi-{IMSI}"
 
 @pytest.mark.unit
 def test_unknown_action():
-    r = subscriber(action="nuke")
+    r = unwrap(subscriber(action="nuke"))
     assert r["ok"] is False
     assert "nuke" in r["error"]
 
@@ -27,19 +27,19 @@ def test_unknown_action():
 @pytest.mark.unit
 class TestRead:
     def test_missing_imsi(self):
-        r = subscriber(action="read")
+        r = unwrap(subscriber(action="read"))
         assert r["ok"] is False
         assert "imsi" in r["error"].lower()
 
     def test_invalid_imsi(self):
-        r = subscriber(action="read", imsi="abc")
+        r = unwrap(subscriber(action="read", imsi="abc"))
         assert r["ok"] is False
 
     @patch("tools.subscriber.get_subscribers_col")
     def test_not_found(self, mock_get_col):
         col = make_mock_col(docs=[])
         mock_get_col.return_value = col
-        r = subscriber(action="read", imsi=IMSI)
+        r = unwrap(subscriber(action="read", imsi=IMSI))
         assert r["ok"] is False
         assert "not found" in r["error"]
 
@@ -47,7 +47,7 @@ class TestRead:
     def test_happy_path_digits(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="read", imsi=IMSI)
+        r = unwrap(subscriber(action="read", imsi=IMSI))
         assert r["ok"] is True
         assert "subscriber" in r
 
@@ -55,14 +55,14 @@ class TestRead:
     def test_happy_path_supi_format(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="read", imsi=SUPI)
+        r = unwrap(subscriber(action="read", imsi=SUPI))
         assert r["ok"] is True
 
     @patch("tools.subscriber.get_subscribers_col")
     def test_secrets_redacted(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="read", imsi=IMSI)
+        r = unwrap(subscriber(action="read", imsi=IMSI))
         assert r["ok"] is True
         sec = r["subscriber"]["security"]
         assert sec["k"] == "***"
@@ -71,7 +71,7 @@ class TestRead:
     @patch("tools.subscriber.get_subscribers_col")
     def test_mongodb_error(self, mock_get_col):
         mock_get_col.side_effect = ServerSelectionTimeoutError("timeout")
-        r = subscriber(action="read", imsi=IMSI)
+        r = unwrap(subscriber(action="read", imsi=IMSI))
         assert r["ok"] is False
         assert "MongoDB" in r["error"]
 
@@ -81,20 +81,20 @@ class TestRead:
 @pytest.mark.unit
 class TestList:
     def test_limit_too_low(self):
-        r = subscriber(action="list", limit=0)
+        r = unwrap(subscriber(action="list", limit=0))
         assert r["ok"] is False
 
     def test_limit_too_high(self):
-        r = subscriber(action="list", limit=1001)
+        r = unwrap(subscriber(action="list", limit=1001))
         assert r["ok"] is False
 
     def test_unsupported_filter_key(self):
-        r = subscriber(action="list", filter={"imsi": "123"})
+        r = unwrap(subscriber(action="list", filter={"imsi": "123"}))
         assert r["ok"] is False
         assert "filter" in r["error"].lower() or "Unsupported" in r["error"]
 
     def test_non_scalar_filter_value(self):
-        r = subscriber(action="list", filter={"subscriber_status": [0, 1]})
+        r = unwrap(subscriber(action="list", filter={"subscriber_status": [0, 1]}))
         assert r["ok"] is False
 
     @patch("tools.subscriber.get_subscribers_col")
@@ -102,7 +102,7 @@ class TestList:
         docs = [make_subscriber(f"9997000000000{i:02d}") for i in range(3)]
         col = make_mock_col(docs=docs)
         mock_get_col.return_value = col
-        r = subscriber(action="list")
+        r = unwrap(subscriber(action="list"))
         assert r["ok"] is True
         assert r["count"] == 3
         assert r["returned"] == 3
@@ -111,14 +111,14 @@ class TestList:
     def test_filter_by_status(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="list", filter={"subscriber_status": 0})
+        r = unwrap(subscriber(action="list", filter={"subscriber_status": 0}))
         assert r["ok"] is True
 
     @patch("tools.subscriber.get_subscribers_col")
     def test_secrets_redacted_in_list(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="list")
+        r = unwrap(subscriber(action="list"))
         assert r["ok"] is True
         for doc in r["subscribers"]:
             assert doc["security"]["k"] == "***"
@@ -129,18 +129,18 @@ class TestList:
 @pytest.mark.unit
 class TestCreate:
     def test_missing_imsi(self):
-        r = subscriber(action="create")
+        r = unwrap(subscriber(action="create"))
         assert r["ok"] is False
 
     def test_invalid_imsi(self):
-        r = subscriber(action="create", imsi="bad")
+        r = unwrap(subscriber(action="create", imsi="bad"))
         assert r["ok"] is False
 
     @patch("tools.subscriber.get_subscribers_col")
     def test_already_exists(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="create", imsi=IMSI)
+        r = unwrap(subscriber(action="create", imsi=IMSI))
         assert r["ok"] is False
         assert "already exists" in r["error"]
 
@@ -148,9 +148,9 @@ class TestCreate:
     def test_happy_path(self, mock_get_col):
         col = make_mock_col(docs=[])  # no existing subscriber
         mock_get_col.return_value = col
-        r = subscriber(action="create", imsi=IMSI, data={
+        r = unwrap(subscriber(action="create", imsi=IMSI, data={
             "security": {"k": "abc123", "opc": "def456"},
-        })
+        }))
         assert r["ok"] is True
         assert "subscriber" in r
         assert col.insert_one.called
@@ -159,7 +159,7 @@ class TestCreate:
     def test_data_merged_with_defaults(self, mock_get_col):
         col = make_mock_col(docs=[])
         mock_get_col.return_value = col
-        r = subscriber(action="create", imsi=IMSI)
+        r = unwrap(subscriber(action="create", imsi=IMSI))
         assert r["ok"] is True
         # Default slice should be present
         assert "slice" in r["subscriber"]
@@ -170,18 +170,18 @@ class TestCreate:
 @pytest.mark.unit
 class TestDelete:
     def test_missing_imsi(self):
-        r = subscriber(action="delete")
+        r = unwrap(subscriber(action="delete"))
         assert r["ok"] is False
 
     def test_invalid_imsi(self):
-        r = subscriber(action="delete", imsi="!@#")
+        r = unwrap(subscriber(action="delete", imsi="!@#"))
         assert r["ok"] is False
 
     @patch("tools.subscriber.get_subscribers_col")
     def test_happy_path(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = subscriber(action="delete", imsi=IMSI)
+        r = unwrap(subscriber(action="delete", imsi=IMSI))
         assert r["ok"] is True
         assert r["deleted"] is True
         assert r["imsi"] == IMSI
@@ -191,6 +191,6 @@ class TestDelete:
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         col.delete_one.return_value = MagicMock(deleted_count=0)
         mock_get_col.return_value = col
-        r = subscriber(action="delete", imsi="999700000000099")
+        r = unwrap(subscriber(action="delete", imsi="999700000000099"))
         assert r["ok"] is True
         assert r["deleted"] is False

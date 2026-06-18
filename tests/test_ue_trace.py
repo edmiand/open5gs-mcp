@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tools.ue_trace import get_ue_trace, _normalize_supi_fn as _normalize_supi, _infer_event
+from conftest import unwrap
 
 
 # ── Sample log snippets ───────────────────────────────────────────────────────
@@ -169,7 +170,7 @@ class TestGetUETrace:
     @patch("tools.ue_trace._read_log_tail")
     def test_events_sorted_by_timestamp(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         timestamps = [e["timestamp"] for e in result["events"]]
         assert timestamps == sorted(timestamps), "events are not in chronological order within a day"
@@ -177,35 +178,35 @@ class TestGetUETrace:
     @patch("tools.ue_trace._read_log_tail")
     def test_registration_success_detected(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["summary"]["registration_success"] is True
 
     @patch("tools.ue_trace._read_log_tail")
     def test_pdu_session_success_detected(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["summary"]["pdu_session_success"] is True
 
     @patch("tools.ue_trace._read_log_tail")
     def test_ue_ip_extracted(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["summary"]["ue_ip_assigned"] == "10.45.0.2"
 
     @patch("tools.ue_trace._read_log_tail")
     def test_mermaid_hint_has_sequencediagram(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert "sequenceDiagram" in result["mermaid_hint"]
 
     @patch("tools.ue_trace._read_log_tail")
     def test_mermaid_hint_contains_expected_participants(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         hint = result["mermaid_hint"]
         assert "participant AMF" in hint
@@ -215,14 +216,14 @@ class TestGetUETrace:
     @patch("tools.ue_trace._read_log_tail")
     def test_bare_imsi_normalized_in_output(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["supi"] == "imsi-999700000000001"
 
     @patch("tools.ue_trace._read_log_tail")
     def test_colon_supi_format_accepted(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("IMSI:999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("IMSI:999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["supi"] == "imsi-999700000000001"
 
@@ -234,37 +235,37 @@ class TestGetUETrace:
             return _fake_log(nf)
 
         mock_read.side_effect = fake_read_with_upf_error
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True, "tool should not fail when a single NF is unreadable"
         assert "upf" in result.get("nf_errors", {})
 
     @patch("tools.ue_trace._read_log_tail")
     def test_all_logs_missing_returns_empty_events(self, mock_read):
         mock_read.return_value = (None, "log file not found")
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["events"] == []
         assert result["summary"]["registration_success"] is False
         assert result["summary"]["pdu_session_success"] is False
 
     def test_invalid_supi_returns_error(self):
-        result = get_ue_trace("not-a-valid-imsi")
+        result = unwrap(get_ue_trace("not-a-valid-imsi"))
         assert result["ok"] is False
         assert "error" in result
 
     def test_invalid_nf_returns_error(self):
-        result = get_ue_trace("imsi-999700000000001", include_nfs=["fake_nf"])
+        result = unwrap(get_ue_trace("imsi-999700000000001", include_nfs=["fake_nf"]))
         assert result["ok"] is False
         assert "Unknown NF" in result["error"]
 
     def test_time_window_out_of_range(self):
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=0)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=0))
         assert result["ok"] is False
 
     @patch("tools.ue_trace._read_log_tail")
     def test_events_contain_required_fields(self, mock_read):
         mock_read.side_effect = _fake_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         required = {"timestamp", "nf", "level", "direction", "message_type", "from", "to", "message"}
         for event in result["events"]:
@@ -278,7 +279,7 @@ class TestGetUETrace:
             return _fake_log(nf)
 
         mock_read.side_effect = no_amf_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         assert result["summary"]["registration_success"] is False
 
@@ -293,7 +294,7 @@ class TestGetUETrace:
         Registration Request / Auth Request / Auth Response lines contain NO UE
         identifier (no SUPI, no NGAP ID) and therefore cannot be safely attributed
         to a specific UE — they are not captured. Pattern-only matching was removed
-        because it would contaminate the trace with events from concurrent UEs.
+        because it would contaminate the trace with other UEs' events.
         """
         amf_log_ngap_ids_present = (
             f"{_D} {_BT}.100: [amf] DEBUG: [InitialUEMessage] RAN_UE_NGAP_ID[1]\n"
@@ -312,7 +313,7 @@ class TestGetUETrace:
             return _fake_log(nf)
 
         mock_read.side_effect = realistic_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         msg_types = [e["message_type"] for e in result["events"]]
         # InitialUEMessage is captured via NGAP ID 1 matching
@@ -320,8 +321,6 @@ class TestGetUETrace:
             "Expected at least one pre-auth NGAP event captured via NGAP ID"
         assert "Security Mode Command" in msg_types
         assert "Registration Accept" in msg_types
-        # Pre-auth NAS messages without UE identifiers are not captured — that is correct
-        # behaviour; including them would risk contaminating the trace with other UEs' events
 
     @patch("tools.ue_trace._read_log_tail")
     def test_no_contamination_when_ngap_ids_empty(self, mock_read):
@@ -347,7 +346,7 @@ class TestGetUETrace:
             return _fake_log(nf)
 
         mock_read.side_effect = realistic_log
-        result = get_ue_trace("imsi-999700000000001", time_window_minutes=1440)
+        result = unwrap(get_ue_trace("imsi-999700000000001", time_window_minutes=1440))
         assert result["ok"] is True
         messages = [e["message"] for e in result["events"]]
         # No event from the other UE must appear in the trace

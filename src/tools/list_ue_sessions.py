@@ -170,7 +170,8 @@ def list_ue_sessions(
     if imsi_filter:
         filter_norm = _bare_imsi(imsi_filter)
         if not filter_norm.isdigit():
-            return {"ok": False, "error": f"Invalid imsi_filter '{imsi_filter}': must be digits or 'imsi-<digits>'"}
+            _e = f"Invalid imsi_filter '{imsi_filter}': must be digits or 'imsi-<digits>'"
+            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     ues: list[dict] = []
     for amf_ue in amf_items:
@@ -208,10 +209,15 @@ def list_ue_sessions(
             ue["security_context"] = amf_ue["security"]
         ues.append(ue)
 
+    _pdu_total = sum(u["pdu_session_count"] for u in ues)
+    _summary = f"Found {len(ues)} registered UE(s) with {_pdu_total} PDU session(s)."
     return {
-        "ok": True,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "ue_count": len(ues),
-        "ues": ues,
-        "sources": {"amf": amf_status, "smf": smf_status},
+        "summary": _summary,
+        "detail": {
+            "ok": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ue_count": len(ues),
+            "ues": ues,
+            "sources": {"amf": amf_status, "smf": smf_status},
+        },
     }
