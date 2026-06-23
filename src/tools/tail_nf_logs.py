@@ -226,6 +226,11 @@ def tail_nf_logs(
     total_matched = len(all_records)
     all_records = all_records[-lines:]  # keep the most recent `lines` entries
 
+    # Recount per-NF after the global cap so nf_counts matches the returned lines.
+    nf_counts = {}
+    for r in all_records:
+        nf_counts[r["nf"]] = nf_counts.get(r["nf"], 0) + 1
+
     # ── serialise ────────────────────────────────────────────────────────────
 
     output = []

@@ -86,10 +86,11 @@ _scope_enforce: bool = bool(_sec["scope_enforcement"] and _sec["auth_enabled"])
 
 
 def _require_write_scope(operation: str) -> dict | None:
-    """Return an error dict if mcp:write scope is missing, else None."""
+    """Return an envelope error dict if mcp:write scope is missing, else None."""
     tok = _get_access_token()
     if tok is None or "mcp:write" not in tok.scopes:
-        return {"ok": False, "error": f"mcp:write scope required for {operation}"}
+        _e = f"mcp:write scope required for {operation}"
+        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
     return None
 
 # ── Auth setup (Layer 2) ───────────────────────────────────────────────────────

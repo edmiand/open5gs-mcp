@@ -131,10 +131,8 @@ def subscriber_update_slices(imsi: str, slices: list) -> dict:
 		merged.pop("_id", None)
 		col.replace_one({"imsi": norm}, merged)
 
-		# Fetch and return updated doc
-		updated = col.find_one({"imsi": norm})
 		return {"summary": f"Slice configuration updated for subscriber {norm}.",
-				"detail": {"ok": True, "subscriber": redact(serialize(updated))}}
+				"detail": {"ok": True, "subscriber": redact(serialize(merged))}}
 
 	except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
 		_e = f"MongoDB connection failed: {exc}"

@@ -8,7 +8,7 @@ from ._subscriber_util import (
     DEFAULT_SUBSCRIBER,
 )
 
-def _wrap(action: str, result: dict) -> dict:
+def _wrap_subscriber(action: str, result: dict) -> dict:
     if not result.get("ok"):
         summary = f"Error: {result.get('error', 'unknown error')}"
     elif action == "read":
@@ -81,13 +81,13 @@ def subscriber(
         error:  {"ok": False, "error": str}
     """
     if action == "read":
-        return _wrap("read",   _read(imsi))
+        return _wrap_subscriber("read",   _read(imsi))
     if action == "list":
-        return _wrap("list",   _list(limit, filter))
+        return _wrap_subscriber("list",   _list(limit, filter))
     if action == "create":
-        return _wrap("create", _create(imsi, data))
+        return _wrap_subscriber("create", _create(imsi, data))
     if action == "delete":
-        return _wrap("delete", _delete(imsi))
+        return _wrap_subscriber("delete", _delete(imsi))
     _e = f"Unknown action '{action}'. Valid: read, list, create, delete"
     return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 

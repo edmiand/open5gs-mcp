@@ -133,10 +133,8 @@ def subscriber_update_profile(
 		merged.pop("_id", None)  # Remove MongoDB internal ID before replace
 		col.replace_one({"imsi": norm}, merged)
 
-		# Fetch and return updated doc
-		updated = col.find_one({"imsi": norm})
 		return {"summary": f"Profile updated for subscriber {norm}.",
-				"detail": {"ok": True, "subscriber": redact(serialize(updated))}}
+				"detail": {"ok": True, "subscriber": redact(serialize(merged))}}
 
 	except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
 		_e = f"MongoDB connection failed: {exc}"
