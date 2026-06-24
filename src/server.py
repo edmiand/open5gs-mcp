@@ -167,6 +167,9 @@ async def nf_lifecycle(
 ) -> dict:
     """Start, stop, restart, or query the status of Open5GS network functions.
 
+    Use this to bring NFs up or down, restart a crashed NF, or check which NFs are
+    currently running — the first step before diagnosing a stopped service.
+
     action: Operation to perform — one of start, stop, restart, status.
     nf:     NF names to target, e.g. ["amf", "smf"]. Omit to target all NFs.
             Valid values: amf, smf, upf, ausf, udm, udr, pcf, nssf, bsf, nrf, scp, webui.
@@ -203,13 +206,18 @@ async def system_health_snapshot(log_minutes: int = 15) -> dict:
 
 @mcp.tool()
 async def subscriber(
-    action: str,
+    action: Literal["read", "list", "create", "delete"],
     imsi: str | None = None,
     data: dict | None = None,
     limit: int = 100,
     filter: dict | None = None,
 ) -> dict:
     """Manage subscriber lifecycle — read, list, create, or delete.
+
+    Use this to provision a new subscriber (create), look up their stored profile
+    (read), enumerate all subscribers (list), or remove one (delete). To modify an
+    existing subscriber's parameters, use subscriber_update_profile or
+    subscriber_update_slices instead.
 
     action: One of "read", "list", "create", "delete".
     imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>"). Required for read/create/delete.
@@ -251,12 +259,22 @@ async def subscriber_update_profile(
 ) -> dict:
     """Update subscriber profile parameters (excludes slice/session configuration).
 
+    Use this to change an existing subscriber's operational status (barring, network
+    access mode), AMBR limits, MSISDN, or security credentials — without touching
+    their slice/DNN configuration. The subscriber must already exist; use
+    subscriber action="create" first if needed.
+
     imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
 
     Only supplied parameters are updated (deep merge for nested dicts).
     See subscriber_update_slices to change DNN/slice configuration.
 
-    Returns updated subscriber document (secrets redacted).
+    Returns:
+      success: {"ok": True, "subscriber": {imsi, subscriber_status,
+                network_access_mode, access_restriction_data,
+                operator_determined_barring, ambr, security (redacted),
+                msisdn, slice, ...}}
+      error:   {"ok": False, "error": str}
     """
     if _scope_enforce:
         if err := _require_write_scope("subscriber_update_profile"):
@@ -273,6 +291,11 @@ async def subscriber_update_profile(
 async def subscriber_update_slices(imsi: str, slices: list) -> dict:
     """Update subscriber slice and session (DNN) configuration.
 
+    Use this to add, remove, or reconfigure DNNs/APNs, or to adjust QoS parameters
+    for a specific slice — without touching profile-level settings like AMBR or
+    subscriber status. Read the current config first with subscriber action="read"
+    so you can preserve existing DNNs when adding new ones.
+
     imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
     slices: Array of slice objects. Each slice must have:
               sst (int, required): Slice Service Type
@@ -285,7 +308,10 @@ async def subscriber_update_slices(imsi: str, slices: list) -> dict:
     The entire slice array is replaced (not merged). To add a second DNN,
     pass your full desired slice config including existing DNNs.
 
-    Returns updated subscriber document (secrets redacted).
+    Returns:
+      success: {"ok": True, "subscriber": {imsi, slice: [{sst, sd,
+                session: [{name, type, qos, ambr, ...}], ...}], ...}}
+      error:   {"ok": False, "error": str}
     """
     if _scope_enforce:
         if err := _require_write_scope("subscriber_update_slices"):
@@ -299,6 +325,10 @@ async def list_ue_sessions(
     include_idle: bool = True,
 ) -> dict:
     """List all live UE registrations and their PDU sessions.
+
+    Use this to check how many UEs are currently registered and what data sessions
+    they have active — the right first step when verifying a successful attach,
+    debugging connectivity, or auditing capacity.
 
     Queries the AMF (/ue-info) for registration context and the SMF (/pdu-info)
     for PDU session detail (including assigned IPs), then joins by SUPI.
@@ -376,6 +406,10 @@ async def get_ue_trace(
     include_nfs: list[str] | None = None,
 ) -> dict:
     """Collect full e2e trace for a UE identified by IMSI/SUPI across all Open5GS NFs.
+
+    Use this when a UE fails to register, authenticate, or establish a PDU session
+    and you need to reconstruct the full signalling call flow across NFs — the output
+    is structured for generating a Mermaid sequence diagram.
 
     Searches AMF first to anchor the time window, then correlates logs from AUSF,
     UDM, UDR, SMF (PFCP SEIDs + UE IP), UPF, PCF, and NRF. Returns structured
