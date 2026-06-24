@@ -380,7 +380,7 @@ async def read_nf_config(nf: str, path: str | None = None) -> dict:
     or a specific subtree when path is supplied. Use this to inspect why two
     NFs can't communicate (mismatched SBI addresses, wrong NRF/SCP URI),
     verify slice or subnet configuration, or check interface bindings — all
-    without opening files manually. Also a prerequisite before patch_nf_config.
+    without opening files manually.
 
     nf:   NF name. Valid: amf smf upf ausf udm udr pcf nssf bsf nrf scp
     path: Optional dot-separated path into the config tree.
