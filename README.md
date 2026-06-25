@@ -24,6 +24,19 @@ Instead of SSH-ing into a server and grepping logs, an agent can call a single t
 
 > More tools planned: `patch_nf_config`, `subscriber_auth_reset`, `query_nf_metrics`, `network_infra_check`, `generate_credentials`, `nrf_registry_query`
 
+### Response envelope
+
+Every tool returns a two-field envelope:
+
+```json
+{
+  "summary": "One-sentence result or error.",
+  "detail":  { ... }
+}
+```
+
+`summary` is always a plain string — safe for agents to surface directly. `detail` contains the full structured payload (the shapes shown in the example workflows below). On error, `summary` starts with `"Error: "` and `detail` carries `{"ok": false, "error": "..."}`.
+
 ---
 
 ## Requirements
@@ -195,19 +208,21 @@ tail_nf_logs(nf=["amf", "ausf", "udm"], grep="imsi-999700000000001", since="15m"
 ```
 subscriber(action="create", imsi="999700000000002",
     data={"security": {"k": "<Ki>", "opc": "<OPc>"}})
-→ {"ok": true, "subscriber": {...}}
+→ {"summary": "Subscriber imsi-999700000000002 created.",
+   "detail":  {"ok": true, "subscriber": {...}}}
 ```
 
 **Check why a device can't get data**
 ```
 list_ue_sessions(imsi_filter="999700000000001")
-→ PDU session exists but ipv4: null → IP allocation failed at SMF/UPF
+→ PDU session exists but detail.sessions[0].ipv4 is null → IP allocation failed at SMF/UPF
 ```
 
 **Find all barred subscribers**
 ```
 subscriber(action="list", filter={"subscriber_status": 1})
-→ {"ok": true, "subscribers": [...], "count": 3, "returned": 3}
+→ {"summary": "3 subscribers found.",
+   "detail":  {"ok": true, "subscribers": [...], "count": 3, "returned": 3}}
 ```
 
 ---

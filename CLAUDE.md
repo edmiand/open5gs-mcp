@@ -62,5 +62,12 @@ NRF SBI: http://localhost:7777
 ## Constraints
 - Never modify ../open5gs files
 - UPF operations require sudo — handle gracefully
-- Tools should return structured data (dicts/JSON), not raw strings
+- All tools must return the standard envelope: `{"summary": "<one sentence>", "detail": {...}}`
+  - `summary` is always a plain string; starts with `"Error: "` on failure
+  - `detail` contains the full structured payload (`{"ok": True/False, ...}`)
 - Each tool must have input validation and a clear error message on failure
+
+## subscriber_update_slices — replace semantics
+The `slices` array is written verbatim to MongoDB (full replace, no merge).
+To add a new DNN, the caller must read the current config first (`subscriber action="read"`)
+and include all existing slices alongside the new one in the `slices` argument.
