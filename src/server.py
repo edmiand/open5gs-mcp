@@ -288,35 +288,77 @@ async def subscriber_update_profile(
 
 
 @mcp.tool()
-async def subscriber_update_slices(imsi: str, slices: list) -> dict:
+async def subscriber_update_slices(
+    imsi: str,
+    action: str,
+    slices: list | None = None,
+    force_replace: bool = False,
+    sst: int | None = None,
+    sd: str | None = None,
+    old_name: str | None = None,
+    new_name: str | None = None,
+    session: dict | None = None,
+    name: str | None = None,
+) -> dict:
     """Update subscriber slice and session (DNN) configuration.
 
-    Use this to add, remove, or reconfigure DNNs/APNs, or to adjust QoS parameters
-    for a specific slice — without touching profile-level settings like AMBR or
-    subscriber status. Read the current config first with subscriber action="read"
-    so you can preserve existing DNNs when adding new ones.
-
+    action: REQUIRED. One of "replace", "rename_session", "upsert_session", "remove_session".
     imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
-    slices: Array of slice objects. Each slice must have:
-              sst (int, required): Slice Service Type
-              session (array, required): At least one session with:
-                name (string, required): DNN (Data Network Name) or APN
-                type (int): 1=IPv4, 2=IPv6, 3=IPv4v6
-                qos, arp, ambr, ue, smf, pcc_rule (optional, complex objects)
-            Optional: sd (Slice Differentiator), default_indicator, lbo_roaming_allowed
 
-    The entire slice array is replaced (not merged). To add a second DNN,
-    pass your full desired slice config including existing DNNs.
+    ── replace ───────────────────────────────────────────────────────────────────
+    Replace the entire slice array. Trigger: bulk reconfiguration or initial setup.
+    Guard: if session names are both removed and added in the same slice, the call
+    is rejected — use rename_session instead. Pass force_replace=True to override
+    when you genuinely intend to swap DNNs (not just rename one).
 
-    Returns:
-      success: {"ok": True, "subscriber": {imsi, slice: [{sst, sd,
-                session: [{name, type, qos, ambr, ...}], ...}], ...}}
-      error:   {"ok": False, "error": str}
+    slices:        Array of slice objects (required). Each slice must have:
+                     sst (int, required): Slice Service Type
+                     session (array, required): At least one session with:
+                       name (string, required): DNN (Data Network Name) or APN
+                       type (int): 1=IPv4, 2=IPv6, 3=IPv4v6
+                       qos, arp, ambr, ue, smf, pcc_rule (optional, complex objects)
+                   Optional per slice: sd (Slice Differentiator), default_indicator,
+                   lbo_roaming_allowed
+    force_replace: Set True only when deliberately swapping DNN names (not renaming).
+
+    ── rename_session ────────────────────────────────────────────────────────────
+    Rename a session (DNN) within a slice, preserving all QoS/AMBR/PCC fields.
+    Trigger: DNN name is wrong and must be corrected — do NOT use replace or
+    upsert_session to add the correct name; that creates a duplicate DNN.
+
+    sst:      Slice Service Type identifying the target slice (required).
+    sd:       Slice Differentiator — required when multiple slices share the same sst.
+    old_name: Current (wrong) session name (required).
+    new_name: Correct session name (required).
+
+    ── upsert_session ────────────────────────────────────────────────────────────
+    Add a new session to a slice, or merge fields into an existing one (identified
+    by session["name"]). Trigger: adding a second DNN, or patching QoS on one DNN
+    without touching the others.
+
+    sst:     Slice Service Type identifying the target slice (required).
+    sd:      Slice Differentiator (optional).
+    session: Session dict with at least {"name": "<DNN>"} (required).
+
+    ── remove_session ───────────────────────────────────────────────────────────
+    Remove a session (DNN) from a slice by name. The slice must retain at least
+    one session after removal. Trigger: decommissioning a DNN from a subscriber.
+
+    sst:  Slice Service Type identifying the target slice (required).
+    sd:   Slice Differentiator (optional).
+    name: Session name (DNN) to remove (required).
+
+    ── Returns ──────────────────────────────────────────────────────────────────
+    success: {"ok": True,  "subscriber": {imsi, slice: [{sst, sd, session: [...]}]}}
+    error:   {"ok": False, "error": str}
     """
     if _scope_enforce:
         if err := _require_write_scope("subscriber_update_slices"):
             return err
-    return await asyncio.to_thread(_subscriber_update_slices, imsi, slices)
+    return await asyncio.to_thread(
+        _subscriber_update_slices,
+        imsi, action, slices, force_replace, sst, sd, old_name, new_name, session, name,
+    )
 
 
 @mcp.tool()

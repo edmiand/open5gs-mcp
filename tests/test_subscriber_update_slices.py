@@ -29,87 +29,213 @@ _TWO_DNNs = [
 ]
 
 
-# ── input validation ──────────────────────────────────────────────────────────
+def _sub_with_dnn(dnn: str) -> dict:
+    """Subscriber whose sst=1 slice has a single session named dnn."""
+    sub = make_subscriber(IMSI)
+    sub["slice"][0]["session"][0]["name"] = dnn
+    return sub
+
+
+# ── replace: input validation ─────────────────────────────────────────────────
 
 @pytest.mark.unit
-class TestValidation:
+class TestReplaceValidation:
+    def test_missing_action_raises(self):
+        with pytest.raises(TypeError):
+            subscriber_update_slices(imsi=IMSI, slices=_VALID_SLICE)
+
+    def test_unknown_action(self):
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="delete_all"))
+        assert r["ok"] is False
+        assert "Unknown action" in r["error"]
+
     def test_invalid_imsi(self):
-        r = unwrap(subscriber_update_slices(imsi="bad", slices=_VALID_SLICE))
+        r = unwrap(subscriber_update_slices(imsi="bad", action="replace", slices=_VALID_SLICE))
         assert r["ok"] is False
 
     def test_not_a_list(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices={"sst": 1}))
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices={"sst": 1}))
         assert r["ok"] is False
         assert "list" in r["error"]
 
     def test_empty_slices(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=[]))
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=[]))
         assert r["ok"] is False
         assert "empty" in r["error"]
 
     def test_slice_not_a_dict(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=["not-a-dict"]))
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=["not-a-dict"]))
         assert r["ok"] is False
 
     def test_slice_missing_sst(self):
         r = unwrap(subscriber_update_slices(
-            imsi=IMSI,
+            imsi=IMSI, action="replace",
             slices=[{"session": [{"name": "internet"}]}],
         ))
         assert r["ok"] is False
         assert "sst" in r["error"]
 
     def test_slice_missing_session(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=[{"sst": 1}]))
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=[{"sst": 1}]))
         assert r["ok"] is False
         assert "session" in r["error"]
 
     def test_empty_session_array(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=[{"sst": 1, "session": []}]))
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="replace", slices=[{"sst": 1, "session": []}],
+        ))
         assert r["ok"] is False
         assert "empty" in r["error"]
 
     def test_session_not_a_dict(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=[{"sst": 1, "session": ["bad"]}]))
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="replace", slices=[{"sst": 1, "session": ["bad"]}],
+        ))
         assert r["ok"] is False
 
     def test_session_missing_name(self):
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=[{"sst": 1, "session": [{"type": 3}]}]))
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="replace", slices=[{"sst": 1, "session": [{"type": 3}]}],
+        ))
         assert r["ok"] is False
         assert "name" in r["error"]
 
     def test_subscriber_not_found(self):
         with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
             mc.return_value = make_mock_col(docs=[])
-            r = unwrap(subscriber_update_slices(imsi=IMSI, slices=_VALID_SLICE))
+            r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=_VALID_SLICE))
         assert r["ok"] is False
         assert "not found" in r["error"]
 
 
-# ── happy path ────────────────────────────────────────────────────────────────
+# ── replace: rename-detection guard ──────────────────────────────────────────
+
+@pytest.mark.unit
+class TestReplaceRenameGuard:
+    def test_blocks_when_session_removed_and_added(self):
+        """The exact failure mode from the demo: 'intranet' kept, 'internet' added."""
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([_sub_with_dnn("intranet")])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                slices=[{"sst": 1, "session": [
+                    {"name": "intranet", "type": 3},
+                    {"name": "internet", "type": 3},
+                ]}],
+            ))
+        assert r["ok"] is False
+        assert "internet" in r["error"]  # the new name is flagged
+        assert "force_replace" in r["error"]
+
+    def test_blocks_pure_rename_via_replace(self):
+        """Single session renamed: 'data' → 'internet'."""
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([_sub_with_dnn("data")])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                slices=[{"sst": 1, "session": [{"name": "internet", "type": 3}]}],
+            ))
+        assert r["ok"] is False
+        assert "rename_session" in r["error"]
+
+    def test_force_replace_bypasses_guard(self):
+        """force_replace=True skips the rename guard."""
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([_sub_with_dnn("data")])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                force_replace=True,
+                slices=[{"sst": 1, "session": [{"name": "internet", "type": 3}]}],
+            ))
+        assert r["ok"] is True
+
+    def test_additive_only_blocked_by_guard(self):
+        """Adding a new DNN name via replace is blocked — use upsert_session instead."""
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                slices=[{"sst": 1, "session": [
+                    {"name": "internet", "type": 3},
+                    {"name": "iotnet",   "type": 3},
+                ]}],
+            ))
+        assert r["ok"] is False
+        assert "upsert_session" in r["error"]
+
+    def test_additive_only_passes_with_force_replace(self):
+        """force_replace=True allows adding a new DNN name via replace."""
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                force_replace=True,
+                slices=[{"sst": 1, "session": [
+                    {"name": "internet", "type": 3},
+                    {"name": "iotnet",   "type": 3},
+                ]}],
+            ))
+        assert r["ok"] is True
+
+    def test_purely_subtractive_passes_guard(self):
+        """Removing a DNN without adding any new one is not a rename."""
+        sub = make_subscriber(IMSI)
+        sub["slice"][0]["session"].append({"name": "iotnet", "type": 3})
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([sub])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                slices=[{"sst": 1, "session": [{"name": "internet", "type": 3}]}],
+            ))
+        assert r["ok"] is True
+
+    def test_new_slice_sst_not_in_existing_skips_guard(self):
+        """A brand-new slice (sst not in existing) has no history to compare against."""
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI,
+                action="replace",
+                slices=[
+                    {"sst": 1, "session": [{"name": "internet", "type": 3}]},
+                    {"sst": 2, "session": [{"name": "ims",      "type": 3}]},
+                ],
+            ))
+        assert r["ok"] is True
+
+
+# ── replace: happy path ───────────────────────────────────────────────────────
 
 @pytest.mark.integration
-class TestHappyPath:
+class TestReplaceHappyPath:
     @patch("tools.subscriber_update_slices.get_subscribers_col")
     def test_valid_update(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=_VALID_SLICE))
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=_VALID_SLICE))
         assert r["ok"] is True
         assert col.replace_one.called
 
     @patch("tools.subscriber_update_slices.get_subscribers_col")
-    def test_two_dnns(self, mock_get_col):
+    def test_two_dnns_with_force_replace(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=_TWO_DNNs))
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="replace", force_replace=True, slices=_TWO_DNNs,
+        ))
         assert r["ok"] is True
 
     @patch("tools.subscriber_update_slices.get_subscribers_col")
     def test_secrets_redacted(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = unwrap(subscriber_update_slices(imsi=IMSI, slices=_VALID_SLICE))
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=_VALID_SLICE))
         assert r["ok"] is True
         sec = r["subscriber"]["security"]
         assert sec["k"] == "***"
@@ -119,5 +245,220 @@ class TestHappyPath:
     def test_supi_format_accepted(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = unwrap(subscriber_update_slices(imsi=f"imsi-{IMSI}", slices=_VALID_SLICE))
+        r = unwrap(subscriber_update_slices(
+            imsi=f"imsi-{IMSI}", action="replace", slices=_VALID_SLICE,
+        ))
         assert r["ok"] is True
+
+
+# ── rename_session ────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestRenameSessionValidation:
+    def test_missing_sst(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="rename_session", old_name="data", new_name="internet",
+        ))
+        assert r["ok"] is False
+        assert "sst" in r["error"]
+
+    def test_missing_old_name(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="rename_session", sst=1, new_name="internet",
+        ))
+        assert r["ok"] is False
+        assert "old_name" in r["error"]
+
+    def test_missing_new_name(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="rename_session", sst=1, old_name="data",
+        ))
+        assert r["ok"] is False
+        assert "new_name" in r["error"]
+
+    def test_slice_not_found(self):
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="rename_session", sst=99, old_name="data", new_name="internet",
+            ))
+        assert r["ok"] is False
+        assert "sst=99" in r["error"]
+
+    def test_session_not_found(self):
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="rename_session", sst=1, old_name="nonexistent", new_name="internet",
+            ))
+        assert r["ok"] is False
+        assert "nonexistent" in r["error"]
+
+    def test_new_name_already_exists(self):
+        sub = make_subscriber(IMSI)
+        sub["slice"][0]["session"].append({"name": "internet", "type": 3})
+        sub["slice"][0]["session"][0]["name"] = "data"
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([sub])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="rename_session", sst=1, old_name="data", new_name="internet",
+            ))
+        assert r["ok"] is False
+        assert "already exists" in r["error"]
+
+
+@pytest.mark.integration
+class TestRenameSessionHappyPath:
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_renames_dnn_preserving_qos(self, mock_get_col):
+        sub = _sub_with_dnn("data")
+        col = make_mock_col([sub])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="rename_session", sst=1, old_name="data", new_name="internet",
+        ))
+        assert r["ok"] is True
+        sessions = r["subscriber"]["slice"][0]["session"]
+        names = [s["name"] for s in sessions]
+        assert "internet" in names
+        assert "data" not in names
+        assert sessions[0]["qos"]["index"] == 9
+
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_summary_contains_old_and_new_name(self, mock_get_col):
+        col = make_mock_col([_sub_with_dnn("data")])
+        mock_get_col.return_value = col
+        result = subscriber_update_slices(
+            imsi=IMSI, action="rename_session", sst=1, old_name="data", new_name="internet",
+        )
+        assert "data" in result["summary"]
+        assert "internet" in result["summary"]
+
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_no_duplicate_session_created(self, mock_get_col):
+        col = make_mock_col([_sub_with_dnn("data")])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="rename_session", sst=1, old_name="data", new_name="internet",
+        ))
+        assert r["ok"] is True
+        assert len(r["subscriber"]["slice"][0]["session"]) == 1
+
+
+# ── upsert_session ────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestUpsertSessionValidation:
+    def test_missing_sst(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="upsert_session", session={"name": "iotnet"},
+        ))
+        assert r["ok"] is False
+        assert "sst" in r["error"]
+
+    def test_session_not_a_dict(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="upsert_session", sst=1, session="iotnet",
+        ))
+        assert r["ok"] is False
+
+    def test_session_missing_name(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="upsert_session", sst=1, session={"type": 3},
+        ))
+        assert r["ok"] is False
+        assert "name" in r["error"]
+
+    def test_slice_not_found(self):
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="upsert_session", sst=99, session={"name": "iotnet"},
+            ))
+        assert r["ok"] is False
+        assert "sst=99" in r["error"]
+
+
+@pytest.mark.integration
+class TestUpsertSessionHappyPath:
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_adds_new_session(self, mock_get_col):
+        col = make_mock_col([make_subscriber(IMSI)])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="upsert_session", sst=1,
+            session={"name": "iotnet", "type": 1},
+        ))
+        assert r["ok"] is True
+        names = [s["name"] for s in r["subscriber"]["slice"][0]["session"]]
+        assert "internet" in names
+        assert "iotnet" in names
+
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_merges_into_existing_session(self, mock_get_col):
+        col = make_mock_col([make_subscriber(IMSI)])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="upsert_session", sst=1,
+            session={"name": "internet", "type": 1},
+        ))
+        assert r["ok"] is True
+        sessions = r["subscriber"]["slice"][0]["session"]
+        assert len(sessions) == 1
+        assert sessions[0]["name"] == "internet"
+        assert sessions[0]["type"] == 1        # updated
+        assert sessions[0]["qos"]["index"] == 9  # preserved
+
+
+# ── remove_session ────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestRemoveSessionValidation:
+    def test_missing_sst(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="remove_session", name="iotnet",
+        ))
+        assert r["ok"] is False
+        assert "sst" in r["error"]
+
+    def test_missing_name(self):
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="remove_session", sst=1,
+        ))
+        assert r["ok"] is False
+        assert "name" in r["error"]
+
+    def test_session_not_found(self):
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="remove_session", sst=1, name="ghost",
+            ))
+        assert r["ok"] is False
+        assert "ghost" in r["error"]
+
+    def test_refuses_to_remove_last_session(self):
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([make_subscriber(IMSI)])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="remove_session", sst=1, name="internet",
+            ))
+        assert r["ok"] is False
+        assert "last session" in r["error"]
+
+
+@pytest.mark.integration
+class TestRemoveSessionHappyPath:
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_removes_one_of_two_sessions(self, mock_get_col):
+        sub = make_subscriber(IMSI)
+        sub["slice"][0]["session"].append({"name": "iotnet", "type": 1})
+        col = make_mock_col([sub])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="remove_session", sst=1, name="iotnet",
+        ))
+        assert r["ok"] is True
+        names = [s["name"] for s in r["subscriber"]["slice"][0]["session"]]
+        assert "iotnet" not in names
+        assert "internet" in names
