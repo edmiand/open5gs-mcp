@@ -11,15 +11,22 @@ from ._subscriber_util import (
 _VALID_ACTIONS = ("replace", "rename_session", "upsert_session", "remove_session")
 
 
+class _AmbiguousSlice(Exception):
+    def __init__(self, sst: int):
+        self.sst = sst
+
+
 def _find_slice(slices: list, sst: int, sd: str | None):
-    """Return the first slice matching sst (and sd if provided), or None."""
-    for s in slices:
-        if s.get("sst") != sst:
-            continue
-        if sd is not None and s.get("sd") != sd:
-            continue
-        return s
-    return None
+    """Return the slice matching sst (and sd if provided), or None.
+
+    Raises _AmbiguousSlice if sd is omitted and multiple slices share sst.
+    """
+    matches = [s for s in slices if s.get("sst") == sst]
+    if sd is not None:
+        matches = [s for s in matches if s.get("sd") == sd]
+    elif len(matches) > 1:
+        raise _AmbiguousSlice(sst)
+    return matches[0] if matches else None
 
 
 def subscriber_update_slices(
@@ -27,7 +34,6 @@ def subscriber_update_slices(
     action: str,
     # replace
     slices: list | None = None,
-    force_replace: bool = False,
     # rename_session / upsert_session / remove_session
     sst: int | None = None,
     sd: str | None = None,
@@ -45,11 +51,11 @@ def subscriber_update_slices(
     action: One of "replace", "rename_session", "upsert_session", "remove_session".
 
     ── replace ───────────────────────────────────────────────────────────────────
-    Replace the entire slice array. All existing slices are discarded.
-
-    Guard: if session names are both removed and added in the same slice, the call
-    is rejected with a suggestion to use rename_session instead. Pass
-    force_replace=True to override when you genuinely intend to swap DNNs.
+    Replace the entire slice array verbatim. All existing slices are discarded —
+    to keep an existing slice/session, include it in this call (read the current
+    config first via subscriber action="read"). To rename a DNN or add/remove a
+    single session without touching the rest, use rename_session/upsert_session/
+    remove_session instead.
 
     slices:        List of slice objects (required). Each slice:
       {
@@ -117,7 +123,7 @@ def subscriber_update_slices(
         return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     if action == "replace":
-        return _replace(norm, slices, force_replace)
+        return _replace(norm, slices)
     if action == "rename_session":
         return _rename_session(norm, sst, sd, old_name, new_name)
     if action == "upsert_session":
@@ -137,7 +143,7 @@ def _ok(subscriber: dict, summary: str) -> dict:
 
 
 def _load(norm: str):
-    """Fetch the subscriber document. Returns (doc, None) or (None, err_dict)."""
+    """Fetch the subscriber document. Returns (col, doc, None) or (None, None, err_dict)."""
     try:
         col = get_subscribers_col()
         doc = col.find_one({"imsi": norm})
@@ -150,8 +156,8 @@ def _load(norm: str):
         return None, None, _err(str(exc))
 
 
-def _save(col, norm: str, doc: dict) -> dict | None:
-    """Write the document back. Returns an err dict on failure, None on success."""
+def _save(col, norm: str, doc: dict):
+    """Write the document back. Returns (None, merged_doc) or (err_dict, None)."""
     try:
         merged = serialize(doc)
         merged.pop("_id", None)
@@ -165,7 +171,7 @@ def _save(col, norm: str, doc: dict) -> dict | None:
 
 # ── actions ───────────────────────────────────────────────────────────────────
 
-def _replace(norm: str, slices, force_replace: bool) -> dict:
+def _replace(norm: str, slices) -> dict:
     if not isinstance(slices, list):
         return _err("slices must be a list")
     if not slices:
@@ -191,56 +197,12 @@ def _replace(norm: str, slices, force_replace: bool) -> dict:
         return err
 
     doc = serialize(doc)
-
-    if not force_replace:
-        hints = _detect_session_additions(doc.get("slice", []), slices)
-        if hints:
-            lines = "; ".join(hints)
-            return _err(
-                f"replace blocked — new session names detected in existing slice(s): {lines}. "
-                f"Use rename_session to rename a DNN, or upsert_session to add a new one. "
-                f"To force a full replacement anyway, pass force_replace=True."
-            )
-
     doc["slice"] = slices
-    doc.pop("_id", None)
-    try:
-        col.replace_one({"imsi": norm}, doc)
-    except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
-        return _err(f"MongoDB connection failed: {exc}")
-    except Exception as exc:
-        return _err(str(exc))
 
-    return _ok(doc, f"Slice configuration updated for subscriber {norm}.")
-
-
-def _detect_session_additions(existing_slices: list, new_slices: list) -> list[str]:
-    """Return hint strings for each existing slice where new session names appear."""
-    hints = []
-    for new_slice in new_slices:
-        sst = new_slice.get("sst")
-        sd = new_slice.get("sd")
-        existing = _find_slice(existing_slices, sst, sd)
-        if existing is None:
-            continue  # brand-new slice — no history to compare against
-        old_names = {s["name"] for s in existing.get("session", [])}
-        new_names = {s["name"] for s in new_slice.get("session", [])}
-        added = new_names - old_names
-        if not added:
-            continue
-        removed = old_names - new_names
-        sd_hint = f" sd={sd!r}" if sd is not None else ""
-        if removed:
-            hints.append(
-                f"slice sst={sst}{sd_hint}: '{', '.join(sorted(removed))}' removed "
-                f"and '{', '.join(sorted(added))}' added — use rename_session"
-            )
-        else:
-            hints.append(
-                f"slice sst={sst}{sd_hint}: new session(s) '{', '.join(sorted(added))}' "
-                f"added — use upsert_session to add a DNN"
-            )
-    return hints
+    err, saved = _save(col, norm, doc)
+    if err:
+        return err
+    return _ok(saved, f"Slice configuration updated for subscriber {norm}.")
 
 
 def _rename_session(norm: str, sst, sd, old_name, new_name) -> dict:
@@ -256,7 +218,10 @@ def _rename_session(norm: str, sst, sd, old_name, new_name) -> dict:
         return err
 
     doc = serialize(doc)
-    target_slice = _find_slice(doc.get("slice", []), sst, sd)
+    try:
+        target_slice = _find_slice(doc.get("slice", []), sst, sd)
+    except _AmbiguousSlice:
+        return _err(f"Multiple slices with sst={sst} exist; specify 'sd' to disambiguate")
     if target_slice is None:
         sd_hint = f" sd={sd!r}" if sd is not None else ""
         return _err(f"No slice with sst={sst}{sd_hint} found for subscriber {norm}")
@@ -298,7 +263,10 @@ def _upsert_session(norm: str, sst, sd, session) -> dict:
         return err
 
     doc = serialize(doc)
-    target_slice = _find_slice(doc.get("slice", []), sst, sd)
+    try:
+        target_slice = _find_slice(doc.get("slice", []), sst, sd)
+    except _AmbiguousSlice:
+        return _err(f"Multiple slices with sst={sst} exist; specify 'sd' to disambiguate")
     if target_slice is None:
         sd_hint = f" sd={sd!r}" if sd is not None else ""
         return _err(f"No slice with sst={sst}{sd_hint} found for subscriber {norm}")
@@ -331,7 +299,10 @@ def _remove_session(norm: str, sst, sd, name) -> dict:
         return err
 
     doc = serialize(doc)
-    target_slice = _find_slice(doc.get("slice", []), sst, sd)
+    try:
+        target_slice = _find_slice(doc.get("slice", []), sst, sd)
+    except _AmbiguousSlice:
+        return _err(f"Multiple slices with sst={sst} exist; specify 'sd' to disambiguate")
     if target_slice is None:
         sd_hint = f" sd={sd!r}" if sd is not None else ""
         return _err(f"No slice with sst={sst}{sd_hint} found for subscriber {norm}")

@@ -292,7 +292,6 @@ async def subscriber_update_slices(
     imsi: str,
     action: str,
     slices: list | None = None,
-    force_replace: bool = False,
     sst: int | None = None,
     sd: str | None = None,
     old_name: str | None = None,
@@ -306,10 +305,11 @@ async def subscriber_update_slices(
     imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
 
     ── replace ───────────────────────────────────────────────────────────────────
-    Replace the entire slice array. Trigger: bulk reconfiguration or initial setup.
-    Guard: if session names are both removed and added in the same slice, the call
-    is rejected — use rename_session instead. Pass force_replace=True to override
-    when you genuinely intend to swap DNNs (not just rename one).
+    Replace the entire slice array verbatim. Trigger: bulk reconfiguration or initial
+    setup. All existing slices are discarded — to keep one, include it in `slices`
+    (read the current config first via `subscriber action="read"`). Do NOT use this
+    to rename or add/remove a single DNN — use rename_session/upsert_session/
+    remove_session instead, which preserve everything else untouched.
 
     slices:        Array of slice objects (required). Each slice must have:
                      sst (int, required): Slice Service Type
@@ -319,7 +319,6 @@ async def subscriber_update_slices(
                        qos, arp, ambr, ue, smf, pcc_rule (optional, complex objects)
                    Optional per slice: sd (Slice Differentiator), default_indicator,
                    lbo_roaming_allowed
-    force_replace: Set True only when deliberately swapping DNN names (not renaming).
 
     ── rename_session ────────────────────────────────────────────────────────────
     Rename a session (DNN) within a slice, preserving all QoS/AMBR/PCC fields.
@@ -357,7 +356,7 @@ async def subscriber_update_slices(
             return err
     return await asyncio.to_thread(
         _subscriber_update_slices,
-        imsi, action, slices, force_replace, sst, sd, old_name, new_name, session, name,
+        imsi, action, slices, sst, sd, old_name, new_name, session, name,
     )
 
 

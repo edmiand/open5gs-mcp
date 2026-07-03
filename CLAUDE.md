@@ -67,7 +67,13 @@ NRF SBI: http://localhost:7777
   - `detail` contains the full structured payload (`{"ok": True/False, ...}`)
 - Each tool must have input validation and a clear error message on failure
 
-## subscriber_update_slices — replace semantics
-The `slices` array is written verbatim to MongoDB (full replace, no merge).
-To add a new DNN, the caller must read the current config first (`subscriber action="read"`)
-and include all existing slices alongside the new one in the `slices` argument.
+## subscriber_update_slices — action semantics
+Action-dispatched tool, four actions:
+- `replace` — the `slices` array is written verbatim to MongoDB (full replace, no merge,
+  no guessing at intent). To keep an existing slice/session, the caller must read the
+  current config first (`subscriber action="read"`) and include it alongside any changes.
+- `rename_session` — rename one session (DNN) within a slice, preserving its other fields.
+- `upsert_session` — add a new session to a slice, or merge fields into an existing one.
+- `remove_session` — remove one session from a slice (a slice must keep at least one).
+For `rename_session`/`upsert_session`/`remove_session`, `sd` must be supplied when more
+than one slice shares the same `sst` — otherwise the call is rejected as ambiguous.

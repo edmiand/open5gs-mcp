@@ -108,108 +108,6 @@ class TestReplaceValidation:
         assert "not found" in r["error"]
 
 
-# ── replace: rename-detection guard ──────────────────────────────────────────
-
-@pytest.mark.unit
-class TestReplaceRenameGuard:
-    def test_blocks_when_session_removed_and_added(self):
-        """The exact failure mode from the demo: 'intranet' kept, 'internet' added."""
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([_sub_with_dnn("intranet")])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                slices=[{"sst": 1, "session": [
-                    {"name": "intranet", "type": 3},
-                    {"name": "internet", "type": 3},
-                ]}],
-            ))
-        assert r["ok"] is False
-        assert "internet" in r["error"]  # the new name is flagged
-        assert "force_replace" in r["error"]
-
-    def test_blocks_pure_rename_via_replace(self):
-        """Single session renamed: 'data' → 'internet'."""
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([_sub_with_dnn("data")])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                slices=[{"sst": 1, "session": [{"name": "internet", "type": 3}]}],
-            ))
-        assert r["ok"] is False
-        assert "rename_session" in r["error"]
-
-    def test_force_replace_bypasses_guard(self):
-        """force_replace=True skips the rename guard."""
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([_sub_with_dnn("data")])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                force_replace=True,
-                slices=[{"sst": 1, "session": [{"name": "internet", "type": 3}]}],
-            ))
-        assert r["ok"] is True
-
-    def test_additive_only_blocked_by_guard(self):
-        """Adding a new DNN name via replace is blocked — use upsert_session instead."""
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([make_subscriber(IMSI)])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                slices=[{"sst": 1, "session": [
-                    {"name": "internet", "type": 3},
-                    {"name": "iotnet",   "type": 3},
-                ]}],
-            ))
-        assert r["ok"] is False
-        assert "upsert_session" in r["error"]
-
-    def test_additive_only_passes_with_force_replace(self):
-        """force_replace=True allows adding a new DNN name via replace."""
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([make_subscriber(IMSI)])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                force_replace=True,
-                slices=[{"sst": 1, "session": [
-                    {"name": "internet", "type": 3},
-                    {"name": "iotnet",   "type": 3},
-                ]}],
-            ))
-        assert r["ok"] is True
-
-    def test_purely_subtractive_passes_guard(self):
-        """Removing a DNN without adding any new one is not a rename."""
-        sub = make_subscriber(IMSI)
-        sub["slice"][0]["session"].append({"name": "iotnet", "type": 3})
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([sub])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                slices=[{"sst": 1, "session": [{"name": "internet", "type": 3}]}],
-            ))
-        assert r["ok"] is True
-
-    def test_new_slice_sst_not_in_existing_skips_guard(self):
-        """A brand-new slice (sst not in existing) has no history to compare against."""
-        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
-            mc.return_value = make_mock_col([make_subscriber(IMSI)])
-            r = unwrap(subscriber_update_slices(
-                imsi=IMSI,
-                action="replace",
-                slices=[
-                    {"sst": 1, "session": [{"name": "internet", "type": 3}]},
-                    {"sst": 2, "session": [{"name": "ims",      "type": 3}]},
-                ],
-            ))
-        assert r["ok"] is True
-
-
 # ── replace: happy path ───────────────────────────────────────────────────────
 
 @pytest.mark.integration
@@ -223,11 +121,11 @@ class TestReplaceHappyPath:
         assert col.replace_one.called
 
     @patch("tools.subscriber_update_slices.get_subscribers_col")
-    def test_two_dnns_with_force_replace(self, mock_get_col):
+    def test_two_dnns(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
         r = unwrap(subscriber_update_slices(
-            imsi=IMSI, action="replace", force_replace=True, slices=_TWO_DNNs,
+            imsi=IMSI, action="replace", slices=_TWO_DNNs,
         ))
         assert r["ok"] is True
 
@@ -305,6 +203,21 @@ class TestRenameSessionValidation:
             ))
         assert r["ok"] is False
         assert "already exists" in r["error"]
+
+    def test_ambiguous_sst_without_sd_rejected(self):
+        """Two slices share sst=1 with different sd; omitting sd must not silently pick one."""
+        sub = make_subscriber(IMSI)
+        sub["slice"] = [
+            {"sst": 1, "sd": "000001", "session": [{"name": "data", "type": 3}]},
+            {"sst": 1, "sd": "000002", "session": [{"name": "other", "type": 3}]},
+        ]
+        with patch("tools.subscriber_update_slices.get_subscribers_col") as mc:
+            mc.return_value = make_mock_col([sub])
+            r = unwrap(subscriber_update_slices(
+                imsi=IMSI, action="rename_session", sst=1, old_name="data", new_name="internet",
+            ))
+        assert r["ok"] is False
+        assert "sd" in r["error"]
 
 
 @pytest.mark.integration
