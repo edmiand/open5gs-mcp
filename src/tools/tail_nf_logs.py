@@ -146,21 +146,27 @@ def tail_nf_logs(
 
     Returns:
         {
-          "ok": bool,
-          "query": {nf, level, grep, lines, since},
-          "total_matched": int,
-          "lines": [
-            {
-              "nf": str,
-              "timestamp": "MM/DD HH:MM:SS.mmm",
-              "component": str,
-              "level": str,
-              "message": str,
-              "source": str | None
-            }
-          ],
-          "nf_counts": {"amf": int, ...},
-          "errors": {"upf": "permission denied", ...}
+          "summary": str,   # one sentence; starts with "Error: " on failure
+          "detail": {
+            "ok": bool,
+            "query": {nf, level, grep, lines, since},
+            "total_matched": int,
+            "lines": [
+              {
+                "nf": str,
+                "timestamp": "MM/DD HH:MM:SS.mmm",
+                "component": str,
+                "level": str,
+                "message": str,
+                "source": str | None
+              }
+            ],
+            "nf_counts": {"amf": int, ...},
+            "errors": {"upf": "permission denied", ...},
+            # only when since= predates the 2 MB tail window:
+            "truncated": True,
+            "earliest_available": "MM/DD HH:MM:SS"
+          }
         }
     """
     # ── validate inputs ──────────────────────────────────────────────────────

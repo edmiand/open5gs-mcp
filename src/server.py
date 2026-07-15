@@ -5,10 +5,11 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import uvicorn
 import yaml
+from pydantic import Field
 from starlette.applications import Starlette
 
 # Make `src/` importable regardless of invocation method
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import mcp.server.sse as _mcp_sse
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from mcp.server.auth.middleware.auth_context import get_access_token as _get_access_token
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
@@ -148,8 +150,17 @@ def _parse_args() -> argparse.Namespace:
 mcp = FastMCP(
     name="open5gs-mcp",
     instructions=(
-        "Manage Open5GS 5G core network functions. "
-        "Use nf_lifecycle to start, stop, restart, or check the status of NFs."
+        "Manage and observe an Open5GS 5G core: NF lifecycle and health "
+        "(nf_lifecycle, system_health_snapshot, nf_resource_usage), subscriber "
+        "provisioning in MongoDB (subscriber, subscriber_update_profile, "
+        "subscriber_update_slices), live UE/RAN state (list_ue_sessions, "
+        "amf_ran_query), and diagnostics (tail_nf_logs, read_nf_config, "
+        "get_ue_trace).\n\n"
+        "Every tool returns the same envelope: "
+        '{"summary": <one-sentence string>, "detail": {"ok": <bool>, ...}}. '
+        'On failure, summary starts with "Error: " and detail is '
+        '{"ok": false, "error": <str>}. Each tool\'s return documentation '
+        "describes the contents of detail."
     ),
     token_verifier=_token_verifier,
     auth=_auth_settings,
@@ -160,23 +171,41 @@ mcp = FastMCP(
 
 # ── Tool registrations ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+# NF name enums, shared across tool signatures so schemas carry real enums.
+_NF = Literal["amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf",
+              "nrf", "scp", "webui"]
+_NF_OR_ALL = Literal["all", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf",
+                     "nssf", "bsf", "nrf", "scp", "webui"]
+_YAML_NF = Literal["amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf",
+                   "bsf", "nrf", "scp"]  # webui has no YAML config
+_TRACE_NF = Literal["amf", "ausf", "udm", "udr", "smf", "pcf", "upf", "nrf"]
+
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+_MUTATING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+
+
+@mcp.tool(annotations=_MUTATING)
 async def nf_lifecycle(
-    action: Literal["start", "stop", "restart", "status"],
-    nf: list[str] | None = None,
+    action: Annotated[
+        Literal["start", "stop", "restart", "status"],
+        Field(description="Operation to perform."),
+    ],
+    nf: Annotated[
+        list[_NF] | None,
+        Field(description='NF names to target, e.g. ["amf", "smf"]. '
+                          "Omit to target all NFs."),
+    ] = None,
 ) -> dict:
     """Start, stop, restart, or query the status of Open5GS network functions.
 
     Use this to bring NFs up or down, restart a crashed NF, or check which NFs are
     currently running — the first step before diagnosing a stopped service.
-
-    action: Operation to perform — one of start, stop, restart, status.
-    nf:     NF names to target, e.g. ["amf", "smf"]. Omit to target all NFs.
-            Valid values: amf, smf, upf, ausf, udm, udr, pcf, nssf, bsf, nrf, scp, webui.
-
-    Returns a dict with "ok" (bool), "action", and "nfs" mapping each NF name to its
-    result. For status: {status, pid, uptime}. For lifecycle ops: {result, pid}.
     UPF operations require sudo — the underlying script handles privilege escalation.
+
+    detail contains: ok, action, and nfs mapping each NF name to its result —
+    for status: {status: "running"|"stopped", pid, uptime}; for lifecycle ops:
+    {result, pid} plus message on a per-NF error. stderr, error, and raw_output
+    appear when the control script fails or emits unparseable output.
     """
     if _scope_enforce and action in ("start", "stop", "restart"):
         if err := _require_write_scope("lifecycle mutations"):
@@ -184,33 +213,62 @@ async def nf_lifecycle(
     return await asyncio.to_thread(_nf_lifecycle, action, nf)
 
 
-@mcp.tool()
-async def system_health_snapshot(log_minutes: int = 15) -> dict:
+@mcp.tool(annotations=_READ_ONLY)
+async def system_health_snapshot(
+    log_minutes: Annotated[
+        int,
+        Field(ge=1, le=1440,
+              description="How many minutes back to scan logs for errors."),
+    ] = 15,
+) -> dict:
     """One-shot health check of the Open5GS 5G core.
 
     Polls all NF processes, scans recent logs for errors, checks MongoDB
-    reachability, and verifies the ogstun TUN device. Call this first in any
-    diagnostic session — it lets an agent triage the entire system in one call
-    and decide which targeted tool to invoke next.
+    reachability, verifies the ogstun TUN device, and counts connected gNBs.
+    Call this first in any diagnostic session — it lets an agent triage the
+    entire system in one call and decide which targeted tool to invoke next.
 
-    log_minutes: How many minutes back to scan logs for errors (default 15, max 1440).
-
-    Returns ok/timestamp plus:
-      nfs      — per-NF status (green/yellow/red), pid, up to 3 recent error lines
+    detail contains: ok, timestamp, plus
+      nfs      — per-NF status (green/yellow/red), pid, up to 3 recent error
+                 lines; endpoint reachability for amf/smf
       mongodb  — status + subscriber count
       tun      — ogstun device status
+      ran      — gNB connectivity via the AMF (status, gnbs_connected)
       summary  — overall health (healthy/degraded/critical) and counts
     """
     return await asyncio.to_thread(_health, log_minutes)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_MUTATING)
 async def subscriber(
-    action: Literal["read", "list", "create", "delete"],
-    imsi: str | None = None,
-    data: dict | None = None,
-    limit: int = 100,
-    filter: dict | None = None,
+    action: Annotated[
+        Literal["read", "list", "create", "delete"],
+        Field(description="Operation to perform."),
+    ],
+    imsi: Annotated[
+        str | None,
+        Field(description='IMSI digits (10-15) or SUPI ("imsi-<digits>"). '
+                          "Required for read/create/delete."),
+    ] = None,
+    data: Annotated[
+        dict | None,
+        Field(description="For create only. Subscriber fields deep-merged with "
+                          'defaults, e.g. {"security": {"k": "<Ki>", "opc": "<OPc>"}, '
+                          '"msisdn": ["+1234567890"], "slice": [...]}.'),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=1000,
+              description="For list only. Max documents to return per page."),
+    ] = 100,
+    filter: Annotated[
+        dict | None,
+        Field(description="For list only. Equality filter; allowed keys: "
+                          "subscriber_status (0=SERVICE_GRANTED, 1=OPERATOR_"
+                          "DETERMINED_BARRING), network_access_mode, "
+                          "access_restriction_data, operator_determined_barring. "
+                          'E.g. {"subscriber_status": 1} lists barred subscribers.'),
+    ] = None,
 ) -> dict:
     """Manage subscriber lifecycle — read, list, create, or delete.
 
@@ -219,21 +277,11 @@ async def subscriber(
     existing subscriber's parameters, use subscriber_update_profile or
     subscriber_update_slices instead.
 
-    action: One of "read", "list", "create", "delete".
-    imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>"). Required for read/create/delete.
-    data:   For create only. Subscriber fields deep-merged with defaults.
-              {"security": {"k": "<Ki>", "opc": "<OPc>"}, "msisdn": [...], ...}
-    limit:  For list only. Max documents to return (1–1000, default 100).
-    filter: For list only. Equality filter — allowed keys:
-              subscriber_status, network_access_mode,
-              access_restriction_data, operator_determined_barring
-
-    Returns:
-      read:   {"ok": True, "subscriber": {...}} (secrets redacted)
-      list:   {"ok": True, "subscribers": [...], "count": int}
-      create: {"ok": True, "subscriber": {...}} (secrets redacted)
-      delete: {"ok": True, "deleted": bool, "imsi": str}
-      error:  {"ok": False, "error": str}
+    detail contains:
+      read/create: ok, subscriber (secrets redacted)
+      list:        ok, subscribers, count (total matching documents in the DB),
+                   returned (documents in this page, ≤ limit)
+      delete:      ok, deleted (false when the IMSI did not exist), imsi
     """
     if _scope_enforce and action in ("create", "delete"):
         if err := _require_write_scope("subscriber mutations"):
@@ -241,21 +289,72 @@ async def subscriber(
     return await asyncio.to_thread(_subscriber, action, imsi, data, limit, filter)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                                      idempotentHint=True, openWorldHint=False))
 async def subscriber_update_profile(
-    imsi: str,
-    security: dict | None = None,
-    ambr: dict | None = None,
-    msisdn: list | None = None,
-    imeisv: list | None = None,
-    mme_host: list | None = None,
-    mme_realm: list | None = None,
-    purge_flag: list | None = None,
-    access_restriction_data: int | None = None,
-    subscriber_status: int | None = None,
-    network_access_mode: int | None = None,
-    operator_determined_barring: int | None = None,
-    subscribed_rau_tau_timer: int | None = None,
+    imsi: Annotated[
+        str,
+        Field(description='IMSI digits (10-15) or SUPI ("imsi-<digits>").'),
+    ],
+    security: Annotated[
+        dict | None,
+        Field(description="Authentication credentials, deep-merged: "
+                          '{"k": "<Ki hex>", "opc": "<OPc hex>", "op": "<OP hex>", '
+                          '"amf": "<AMF hex, e.g. 8000>", "sqn": <int>}.'),
+    ] = None,
+    ambr: Annotated[
+        dict | None,
+        Field(description="UE-AMBR: "
+                          '{"downlink": {"value": <int>, "unit": <int>}, '
+                          '"uplink": {...}} where unit is 0=bps, 1=Kbps, '
+                          "2=Mbps, 3=Gbps, 4=Tbps."),
+    ] = None,
+    msisdn: Annotated[
+        list | None,
+        Field(description='Phone numbers, e.g. ["+1234567890"].'),
+    ] = None,
+    imeisv: Annotated[
+        list | None,
+        Field(description="IMEISV strings (equipment identity)."),
+    ] = None,
+    mme_host: Annotated[
+        list | None,
+        Field(description="EPC interworking: serving MME Diameter host(s)."),
+    ] = None,
+    mme_realm: Annotated[
+        list | None,
+        Field(description="EPC interworking: serving MME Diameter realm(s)."),
+    ] = None,
+    purge_flag: Annotated[
+        list | None,
+        Field(description="EPC interworking: UE-purged-in-MME flag(s)."),
+    ] = None,
+    access_restriction_data: Annotated[
+        int | None,
+        Field(description="Bitmask of restricted access types "
+                          "(3GPP TS 29.272 §7.3.31), e.g. 32 = "
+                          "HO-to-non-3GPP-access not allowed."),
+    ] = None,
+    subscriber_status: Annotated[
+        int | None,
+        Field(description="0=SERVICE_GRANTED, 1=OPERATOR_DETERMINED_BARRING "
+                          "(TS 29.272 §7.3.29)."),
+    ] = None,
+    network_access_mode: Annotated[
+        int | None,
+        Field(description="0=PACKET_AND_CIRCUIT, 1=RESERVED, 2=ONLY_PACKET "
+                          "(TS 29.272 §7.3.21)."),
+    ] = None,
+    operator_determined_barring: Annotated[
+        int | None,
+        Field(description="Barring category 0-8 (TS 29.272 §7.3.30); "
+                          "0 = all packet-oriented services barred. Takes "
+                          "effect when subscriber_status=1."),
+    ] = None,
+    subscribed_rau_tau_timer: Annotated[
+        int | None,
+        Field(description="Periodic RAU/TAU timer in minutes (default 12)."),
+    ] = None,
 ) -> dict:
     """Update subscriber profile parameters (excludes slice/session configuration).
 
@@ -264,17 +363,12 @@ async def subscriber_update_profile(
     their slice/DNN configuration. The subscriber must already exist; use
     subscriber action="create" first if needed.
 
-    imsi: IMSI digits (10-15) or SUPI ("imsi-<digits>").
-
     Only supplied parameters are updated (deep merge for nested dicts).
     See subscriber_update_slices to change DNN/slice configuration.
 
-    Returns:
-      success: {"ok": True, "subscriber": {imsi, subscriber_status,
-                network_access_mode, access_restriction_data,
-                operator_determined_barring, ambr, security (redacted),
-                msisdn, slice, ...}}
-      error:   {"ok": False, "error": str}
+    detail contains: ok, subscriber (the full updated document — imsi,
+    subscriber_status, network_access_mode, access_restriction_data,
+    operator_determined_barring, ambr, security (redacted), msisdn, slice, ...).
     """
     if _scope_enforce:
         if err := _require_write_scope("subscriber_update_profile"):
@@ -287,22 +381,59 @@ async def subscriber_update_profile(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                                      idempotentHint=True, openWorldHint=False))
 async def subscriber_update_slices(
-    imsi: str,
-    action: str,
-    slices: list | None = None,
-    sst: int | None = None,
-    sd: str | None = None,
-    old_name: str | None = None,
-    new_name: str | None = None,
-    session: dict | None = None,
-    name: str | None = None,
+    imsi: Annotated[
+        str,
+        Field(description='IMSI digits (10-15) or SUPI ("imsi-<digits>").'),
+    ],
+    action: Annotated[
+        Literal["replace", "rename_session", "upsert_session", "remove_session"],
+        Field(description="Operation to perform — see the tool description for "
+                          "when to use each."),
+    ],
+    slices: Annotated[
+        list | None,
+        Field(description="replace only (required). Array of slice objects, each "
+                          "with sst (int, required), session (array, required — "
+                          "at least one, each with name (DNN, required), "
+                          "type (1=IPv4, 2=IPv6, 3=IPv4v6), and optional "
+                          "qos/arp/ambr/ue/smf/pcc_rule), plus optional sd, "
+                          "default_indicator, lbo_roaming_allowed."),
+    ] = None,
+    sst: Annotated[
+        int | None,
+        Field(description="Slice Service Type identifying the target slice. "
+                          "Required for rename/upsert/remove_session."),
+    ] = None,
+    sd: Annotated[
+        str | None,
+        Field(description="Slice Differentiator (6 hex digits). For rename/"
+                          "upsert/remove_session: REQUIRED when multiple slices "
+                          "share the same sst — otherwise the call is rejected "
+                          "as ambiguous."),
+    ] = None,
+    old_name: Annotated[
+        str | None,
+        Field(description="rename_session only (required): current session name."),
+    ] = None,
+    new_name: Annotated[
+        str | None,
+        Field(description="rename_session only (required): new session name."),
+    ] = None,
+    session: Annotated[
+        dict | None,
+        Field(description="upsert_session only (required): session dict with at "
+                          'least {"name": "<DNN>"}.'),
+    ] = None,
+    name: Annotated[
+        str | None,
+        Field(description="remove_session only (required): session name (DNN) "
+                          "to remove."),
+    ] = None,
 ) -> dict:
     """Update subscriber slice and session (DNN) configuration.
-
-    action: REQUIRED. One of "replace", "rename_session", "upsert_session", "remove_session".
-    imsi:   IMSI digits (10-15) or SUPI ("imsi-<digits>").
 
     ── replace ───────────────────────────────────────────────────────────────────
     Replace the entire slice array verbatim. Trigger: bulk reconfiguration or initial
@@ -311,45 +442,24 @@ async def subscriber_update_slices(
     to rename or add/remove a single DNN — use rename_session/upsert_session/
     remove_session instead, which preserve everything else untouched.
 
-    slices:        Array of slice objects (required). Each slice must have:
-                     sst (int, required): Slice Service Type
-                     session (array, required): At least one session with:
-                       name (string, required): DNN (Data Network Name) or APN
-                       type (int): 1=IPv4, 2=IPv6, 3=IPv4v6
-                       qos, arp, ambr, ue, smf, pcc_rule (optional, complex objects)
-                   Optional per slice: sd (Slice Differentiator), default_indicator,
-                   lbo_roaming_allowed
-
     ── rename_session ────────────────────────────────────────────────────────────
     Rename a session (DNN) within a slice, preserving all QoS/AMBR/PCC fields.
     Trigger: DNN name is wrong and must be corrected — do NOT use replace or
     upsert_session to add the correct name; that creates a duplicate DNN.
-
-    sst:      Slice Service Type identifying the target slice (required).
-    sd:       Slice Differentiator — required when multiple slices share the same sst.
-    old_name: Current (wrong) session name (required).
-    new_name: Correct session name (required).
+    Requires sst, old_name, new_name (and sd when ambiguous).
 
     ── upsert_session ────────────────────────────────────────────────────────────
     Add a new session to a slice, or merge fields into an existing one (identified
     by session["name"]). Trigger: adding a second DNN, or patching QoS on one DNN
-    without touching the others.
-
-    sst:     Slice Service Type identifying the target slice (required).
-    sd:      Slice Differentiator (optional).
-    session: Session dict with at least {"name": "<DNN>"} (required).
+    without touching the others. Requires sst, session (and sd when ambiguous).
 
     ── remove_session ───────────────────────────────────────────────────────────
     Remove a session (DNN) from a slice by name. The slice must retain at least
     one session after removal. Trigger: decommissioning a DNN from a subscriber.
+    Requires sst, name (and sd when ambiguous).
 
-    sst:  Slice Service Type identifying the target slice (required).
-    sd:   Slice Differentiator (optional).
-    name: Session name (DNN) to remove (required).
-
-    ── Returns ──────────────────────────────────────────────────────────────────
-    success: {"ok": True,  "subscriber": {imsi, slice: [{sst, sd, session: [...]}]}}
-    error:   {"ok": False, "error": str}
+    detail contains: ok, subscriber (updated document, secrets redacted) with
+    slice: [{sst, sd, session: [...]}].
     """
     if _scope_enforce:
         if err := _require_write_scope("subscriber_update_slices"):
@@ -360,10 +470,18 @@ async def subscriber_update_slices(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def list_ue_sessions(
-    imsi_filter: str | None = None,
-    include_idle: bool = True,
+    imsi_filter: Annotated[
+        str | None,
+        Field(description='IMSI prefix (digits or "imsi-<digits>") to narrow '
+                          "results."),
+    ] = None,
+    include_idle: Annotated[
+        bool,
+        Field(description="Set false to return only UEs with at least one "
+                          "active PDU session."),
+    ] = True,
 ) -> dict:
     """List all live UE registrations and their PDU sessions.
 
@@ -374,47 +492,74 @@ async def list_ue_sessions(
     Queries the AMF (/ue-info) for registration context and the SMF (/pdu-info)
     for PDU session detail (including assigned IPs), then joins by SUPI.
 
-    imsi_filter:  Optional IMSI prefix (digits or "imsi-<digits>") to narrow results.
-    include_idle: Set False to return only UEs with at least one active PDU session.
-
-    Returns ue_count, per-UE cm_state/ue_activity, and per-session detail:
-      psi, dnn, S-NSSAI, ipv4/ipv6, state, QoS flows, N3 GTP-U endpoints.
-    Also reports source reachability (sources.amf / sources.smf).
+    detail contains: ok, timestamp, ue_count, ues (per-UE cm_state, ue_activity,
+    slices, location, and pdu_sessions: psi, dnn, snssai, ipv4/ipv6, state,
+    qos_flows, N3 GTP-U endpoints), and sources — per-source reachability
+    (sources.amf / sources.smf).
     """
     return await asyncio.to_thread(_list_ue_sessions, imsi_filter, include_idle)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def tail_nf_logs(
-    nf: str | list[str] = "all",
-    level: str = "info",
-    grep: str | None = None,
-    lines: int = 100,
-    since: str | None = None,
+    nf: Annotated[
+        _NF_OR_ALL | list[_NF],
+        Field(description='NF name, list of names, or "all".'),
+    ] = "all",
+    level: Annotated[
+        Literal["debug", "info", "warn", "warning", "error"],
+        Field(description="Minimum severity to include (error → only "
+                          "ERROR/CRIT/FATAL)."),
+    ] = "info",
+    grep: Annotated[
+        str | None,
+        Field(description="Keyword or Python regex (case-insensitive) matched "
+                          'against the raw log line, e.g. "imsi-999700", '
+                          '"Registration", "5QI|NSSAI".'),
+    ] = None,
+    lines: Annotated[
+        int,
+        Field(ge=1, le=500,
+              description="Max total lines to return across all NFs."),
+    ] = 100,
+    since: Annotated[
+        str | None,
+        Field(description='Time window start — relative ("15m", "2h") or ISO '
+                          'datetime ("2026-06-03T20:00:00"). Omit to read from '
+                          "the current tail without a time constraint."),
+    ] = None,
 ) -> dict:
     """Filtered log reads across one or more Open5GS NF log files.
 
-    Reads from each log file tail, filters, then interleaves results from all
-    requested NFs in chronological order — ideal for correlating events across
-    AMF + AUSF + UDM during a single registration or session failure.
+    Reads the last ~2 MB of each requested log file, filters by level/keyword/
+    time window, then interleaves results from all NFs in chronological order —
+    ideal for correlating events across AMF + AUSF + UDM during a single
+    registration or session failure.
 
-    nf:     NF name, list of names, or "all". Valid: amf smf upf ausf udm udr
-            pcf nssf bsf nrf scp webui
-    level:  Minimum severity: debug | info | warn | error
-    grep:   Optional keyword or Python regex (case-insensitive) applied to the
-            raw log line. E.g. "imsi-999700", "Registration", "5QI|NSSAI"
-    lines:  Max total lines to return across all NFs (default 100, max 500).
-    since:  Time window start. Relative ("15m", "2h") or ISO datetime.
-            Omit to read from the current tail without a time constraint.
-
-    Returns total_matched, per-line {nf, timestamp, component, level, message,
-    source}, per-NF line counts, and per-NF errors (e.g. UPF permission denied).
+    detail contains: ok, query (arguments echoed), total_matched, lines — each
+    {nf, timestamp, component, level, message, source} — nf_counts per NF, and
+    errors per NF that could not be read (e.g. UPF log permission denied).
+    When a since= window predates the 2 MB tail, detail also carries
+    truncated: true and earliest_available (the oldest timestamp actually
+    readable) — results before that point are missing, not absent.
     """
     return await asyncio.to_thread(_tail_nf_logs, nf, level, grep, lines, since)
 
 
-@mcp.tool()
-async def read_nf_config(nf: str, path: str | None = None) -> dict:
+@mcp.tool(annotations=_READ_ONLY)
+async def read_nf_config(
+    nf: Annotated[
+        _YAML_NF,
+        Field(description="NF name (webui has no YAML config)."),
+    ],
+    path: Annotated[
+        str | None,
+        Field(description="Dot-separated path into the config tree, e.g. "
+                          '"amf.sbi.client.scp". List items can be indexed '
+                          'numerically: "amf.sbi.server.0". Omit for the '
+                          "full tree."),
+    ] = None,
+) -> dict:
     """Read the YAML configuration for any Open5GS network function.
 
     Parses install/etc/open5gs/<nf>.yaml and returns the full config tree,
@@ -423,61 +568,88 @@ async def read_nf_config(nf: str, path: str | None = None) -> dict:
     verify slice or subnet configuration, or check interface bindings — all
     without opening files manually.
 
-    nf:   NF name. Valid: amf smf upf ausf udm udr pcf nssf bsf nrf scp
-    path: Optional dot-separated path into the config tree.
-          Examples:
-            "amf.sbi"                → SBI server/client addresses
-            "amf.sbi.client.scp"     → SCP URI the AMF is pointing at
-            "smf.pfcp.client.upf"    → UPF address SMF sends PFCP to
-            "smf.session"            → UE IP subnet pool
-            "amf.guami"              → PLMN + AMF ID
-            "amf.plmn_support"       → supported PLMNs and slices
-            "logger"                 → log file path and level
-          List items can be indexed numerically: "amf.sbi.server.0"
+    Useful paths:
+      "amf.sbi"                → SBI server/client addresses
+      "amf.sbi.client.scp"     → SCP URI the AMF is pointing at
+      "smf.pfcp.client.upf"    → UPF address SMF sends PFCP to
+      "smf.session"            → UE IP subnet pool
+      "amf.guami"              → PLMN + AMF ID
+      "amf.plmn_support"       → supported PLMNs and slices
+      "logger"                 → log file path and level
 
-    Returns ok, nf, config_file path, path echoed, and config subtree.
+    detail contains: ok, nf, config_file (absolute path), path (echoed), and
+    config (the parsed subtree — full tree when path omitted).
     """
     return await asyncio.to_thread(_read_nf_config, nf, path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def get_ue_trace(
-    supi: str,
-    time_window_minutes: int = 60,
-    include_nfs: list[str] | None = None,
+    supi: Annotated[
+        str,
+        Field(description='IMSI/SUPI string: "imsi-999700000000001" (canonical), '
+                          '"999700000000001" (bare digits), or '
+                          '"IMSI:999700000000001" (colon-separated).'),
+    ],
+    time_window_minutes: Annotated[
+        int,
+        Field(ge=1, le=1440,
+              description="How far back to search the AMF log."),
+    ] = 60,
+    include_nfs: Annotated[
+        list[_TRACE_NF] | None,
+        Field(description="Subset of NFs to search. Defaults to "
+                          '["amf","ausf","udm","udr","smf","pcf","upf"] — '
+                          "NRF is excluded unless listed here or "
+                          "include_nrf=true."),
+    ] = None,
+    window_padding_seconds: Annotated[
+        int,
+        Field(ge=0, le=60,
+              description="Seconds added to both ends of the derived search "
+                          "window; increase on loaded systems where NF clocks "
+                          "lag."),
+    ] = 5,
+    include_nrf: Annotated[
+        bool,
+        Field(description="Also search the NRF log and include NF-lifecycle "
+                          'events (direction="internal").'),
+    ] = False,
 ) -> dict:
     """Collect full e2e trace for a UE identified by IMSI/SUPI across all Open5GS NFs.
 
     Use this when a UE fails to register, authenticate, or establish a PDU session
-    and you need to reconstruct the full signalling call flow across NFs — the output
-    is structured for generating a Mermaid sequence diagram.
+    and you need to reconstruct the full signalling call flow across NFs — the
+    output is structured for generating a Mermaid sequence diagram.
 
     Searches AMF first to anchor the time window, then correlates logs from AUSF,
-    UDM, UDR, SMF (PFCP SEIDs + UE IP), UPF, PCF, and NRF. Returns structured
-    events suitable for reconstructing a Mermaid sequence diagram of the call flow.
+    UDM, UDR, SMF (PFCP SEIDs + UE IP), UPF, and PCF (plus NRF when requested).
 
-    supi:                IMSI/SUPI string. Accepted formats:
-                           "imsi-999700000000001"  (SUPI canonical form)
-                           "999700000000001"       (bare digits)
-                           "IMSI:999700000000001"  (colon-separated)
-    time_window_minutes: How far back to search the AMF log (default 60, max 1440).
-    include_nfs:         Subset of NFs to search. Defaults to all:
-                           ["amf","ausf","udm","udr","smf","pcf","nrf","upf"]
-
-    Returns:
-      ok, supi, time_range, summary (registration_success, pdu_session_success,
-      ue_ip_assigned, errors), events (sorted list of structured log events with
-      timestamp/nf/level/direction/message_type/from/to/message),
-      mermaid_hint (sequenceDiagram participant block), and nf_errors if any NF
-      log was unreadable.
+    detail contains: ok, supi, time_range, summary (registration_success,
+    pdu_session_success, ue_ip_assigned, errors, total_events), events (sorted
+    list of structured log events with timestamp/nf/level/direction/
+    message_type/from/to/message), mermaid_hint (sequenceDiagram participant
+    block), and nf_errors if any NF log was unreadable.
     """
-    return await asyncio.to_thread(_get_ue_trace, supi, time_window_minutes, include_nfs)
+    return await asyncio.to_thread(
+        _get_ue_trace, supi, time_window_minutes, include_nfs,
+        window_padding_seconds, include_nrf,
+    )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def nf_resource_usage(
-    nfs: list[str] | None = None,
-    sample_interval: float = 1.0,
+    nfs: Annotated[
+        list[_NF] | None,
+        Field(description='NF names to sample, e.g. ["amf", "smf"]. '
+                          "Omit for all NFs."),
+    ] = None,
+    sample_interval: Annotated[
+        float,
+        Field(ge=0.1, le=10.0,
+              description="Sampling window in seconds. Larger values give "
+                          "more accurate CPU averages."),
+    ] = 1.0,
 ) -> dict:
     """CPU, memory, and I/O utilisation for each running Open5GS NF vs system totals.
 
@@ -486,12 +658,7 @@ async def nf_resource_usage(
     identify which NF is consuming resources, spot memory leaks, or compare
     Open5GS load against overall system capacity.
 
-    nfs:             NF names to sample (e.g. ["amf","smf"]). Omit for all NFs.
-                     Valid: amf smf upf ausf udm udr pcf nssf bsf nrf scp webui
-    sample_interval: Sampling window in seconds (0.1 – 10.0, default 1.0).
-                     Larger values give more accurate CPU averages.
-
-    Returns ok, timestamp, sample_interval_s, and:
+    detail contains: ok, timestamp, sample_interval_s, and:
       nfs        — per-NF {status, pid, cpu_percent, memory{rss_mb,vms_mb,percent},
                    io{read/write_bytes_per_s, read/write_total_mb}, threads}
       aggregates — nfs_running, total_cpu_percent, total_rss_mb,
@@ -503,7 +670,7 @@ async def nf_resource_usage(
     return await asyncio.to_thread(_nf_resource_usage, nfs, sample_interval)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def amf_ran_query() -> dict:
     """Query live RAN state from the AMF OAM API and metrics endpoint.
 
@@ -512,10 +679,10 @@ async def amf_ran_query() -> dict:
     inspect their TA/slice config, and count UEs per gNB before troubleshooting
     registration failures.
 
-    Returns ok, connected_gnbs, registered_ues, total_plmns, plmns list
-    (each entry: plmn_id, mcc, mnc, s_nssai[]), gnbs list (each entry:
-    gnb_id, plmn, sctp_peer, supported_ta_list, num_connected_ues), and
-    gnbs_status ("ok"|"unreachable"|"timeout"|"error").
+    detail contains: ok, connected_gnbs, registered_ues, total_plmns, plmns list
+    (each entry: plmn_id, mcc, mnc, s_nssai[]), gnbs list (each entry: gnb_id,
+    plmn, sctp_peer, supported_ta_list, num_connected_ues), and gnbs_status
+    ("ok"|"unreachable"|"timeout"|"error").
     """
     return await asyncio.to_thread(_amf_ran_query)
 

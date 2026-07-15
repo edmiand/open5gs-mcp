@@ -90,22 +90,27 @@ def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
 
     Returns:
         {
-            "ok": bool,
-            "action": str,
-            "nfs": {
-                "<name>": {
-                    # status action:
-                    "status": "running" | "stopped",
-                    "pid": int | None,
-                    "uptime": str | None,
+            "summary": str,          # one sentence; starts with "Error: " on failure
+            "detail": {
+                "ok": bool,
+                "action": str,
+                "nfs": {
+                    "<name>": {
+                        # status action:
+                        "status": "running" | "stopped",
+                        "pid": int | None,
+                        "uptime": str | None,
 
-                    # start/stop/restart action:
-                    "result": str,   # e.g. "started", "stopped", "already running", "error"
-                    "pid": int | None,
-                    "message": str,  # only present on error
-                }
+                        # start/stop/restart action:
+                        "result": str,   # e.g. "started", "stopped", "already running", "error"
+                        "pid": int | None,
+                        "message": str,  # only present on error
+                    }
+                },
+                "stderr": str,      # only present if non-empty
+                "error": str,       # only when the script exited non-zero with no parseable output
+                "raw_output": str,  # ditto
             },
-            "stderr": str,  # only present if non-empty
         }
     """
     if isinstance(nf, str):

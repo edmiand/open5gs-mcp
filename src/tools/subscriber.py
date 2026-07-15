@@ -66,8 +66,8 @@ def subscriber(
         limit:  For list only. Max documents to return (1-1000, default 100).
 
         filter: For list only. Optional equality filter dict. Allowed keys:
-                  subscriber_status         (0=service_granted, 1=operator_barring)
-                  network_access_mode       (0=packet_and_circuit, 1=only_packet, 2=only_circuit)
+                  subscriber_status         (0=SERVICE_GRANTED, 1=OPERATOR_DETERMINED_BARRING)
+                  network_access_mode       (0=PACKET_AND_CIRCUIT, 1=RESERVED, 2=ONLY_PACKET)
                   access_restriction_data   (int)
                   operator_determined_barring (int)
                 Example: {"subscriber_status": 1} lists all barred subscribers.

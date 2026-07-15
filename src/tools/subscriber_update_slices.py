@@ -98,7 +98,7 @@ def subscriber_update_slices(
     If no session with that name exists, the session is appended.
 
     sst:     Slice Service Type identifying the target slice (required).
-    sd:      Slice Differentiator (optional).
+    sd:      Slice Differentiator — required when multiple slices share the same sst.
     session: Session dict with at least {"name": "<DNN>"} (required).
 
     ── remove_session ───────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ def subscriber_update_slices(
     one session after removal.
 
     sst:  Slice Service Type identifying the target slice (required).
-    sd:   Slice Differentiator (optional).
+    sd:   Slice Differentiator — required when multiple slices share the same sst.
     name: Session name (DNN) to remove (required).
 
     ── Returns ──────────────────────────────────────────────────────────────────
