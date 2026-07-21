@@ -25,7 +25,7 @@
 set -uo pipefail
 
 main() {
-    local MCP_DIR="${MCP_DIR:-/home/dmandrey/open5gs-mcp}"
+    local MCP_DIR; MCP_DIR="${MCP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
     local SCRIPT_DIR="$MCP_DIR/scripts"
     local STATE_DIR="$SCRIPT_DIR/.state"
     local LOG_DIR="$SCRIPT_DIR/logs"
@@ -42,7 +42,7 @@ main() {
             --skip-tests) SKIP_TESTS=1; shift ;;
             --rollback)   DO_ROLLBACK=1; shift ;;
             -h|--help)
-                sed -n '2,20p' "$MCP_DIR/scripts/mcp-upgrade.sh" | sed 's/^# \{0,1\}//'
+                sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
                 exit 0 ;;
             *) echo "Unknown option: $1" >&2; exit 2 ;;
         esac
