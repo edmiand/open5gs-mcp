@@ -11,7 +11,8 @@ Never modify files in ../open5gs directly.
 ## Key paths in Open5GS (read-only reference)
 - Configs:  ../open5gs/install/etc/open5gs/<nf>.yaml
 - Logs:     ../open5gs/install/var/log/open5gs/<nf>.log
-- Scripts:  ../open5gs/misc/open5gs-ctl.sh
+- Scripts:  ../open5gs/open5gs-ctl.sh
+- Upgrade:  ../open5gs/open5gs-upgrade.sh — safe, reversible upgrade of the Open5GS checkout
 - PID files:../open5gs/install/var/run/
 - Certs:    ../open5gs/misc/make-certs.sh, gen-hnkey.sh
 - WebUI:    http://localhost:9999 (REST API for subscriber CRUD)
@@ -21,7 +22,10 @@ Never modify files in ../open5gs directly.
 amf, smf, upf, ausf, udm, udr, pcf, nssf, bsf, nrf, scp, webui
 
 ## NF ports (Prometheus metrics)
-All NFs expose metrics at http://localhost:9090/metrics
+Every NF exposes metrics at `<nf-loopback-addr>:9090/metrics` — the address is
+per-NF (e.g. AMF `127.0.0.5`, SMF `127.0.0.4`), read from each NF's own YAML
+config (`metrics.server`), not a single shared `localhost` port. See
+`_METRICS_DEFAULTS` in `src/tools/_nf_util.py` for the fallback map.
 NRF SBI: http://localhost:7777
 
 ## AMF SBI / OAM API
@@ -30,26 +34,10 @@ NRF SBI: http://localhost:7777
 - AMF speaks HTTP/2 prior knowledge (h2c) — no upgrade negotiation
 - Always use `curl --http2-prior-knowledge`; httpx/httpcore will fail with HTTP/1.1
 
-## MCP tools — built
-- nf_lifecycle              — start/stop/restart/status any NF
-- system_health_snapshot    — full health check in one call
-- subscriber               — read/list/create/delete subscribers (action-dispatched)
-- subscriber_update_profile — update profile params (security, AMBR, status, restrictions)
-- subscriber_update_slices  — update slice/session (DNN) configuration
-- list_ue_sessions          — active UE contexts and PDU sessions (AMF+SMF join)
-- read_nf_config            — read any NF YAML config
-- tail_nf_logs              — filtered log reads across NFs
-- get_ue_trace              — e2e UE call flow reconstruction across all NFs
-- amf_ran_query             — connected gNBs, registered UEs, PLMN/slice config (OAM API)
-- nf_resource_usage         — CPU/RAM/I/O per-NF utilisation vs system totals
-
-## MCP tools — not yet built
-- subscriber_auth_reset  — update K/OPc/SQN for a SUPI
-- patch_nf_config        — patch key paths in any NF YAML config
-- query_nf_metrics       — scrape Prometheus metrics from any NF
-- network_infra_check    — check/setup TUN devices
-- generate_credentials   — run cert/key generation scripts
-- nrf_registry_query     — query NRF for registered NF instances
+## MCP tools
+Build status (done vs. planned) lives in ROADMAP.md — check there before assuming
+a tool exists or picking the next one to build. FEATURES.md has the fuller backlog
+of candidate tools discovered by NF API/source analysis.
 
 ## Developer utilities
 - `mcp-tools` — shell script to inspect the running MCP server without a client
@@ -58,6 +46,9 @@ NRF SBI: http://localhost:7777
   - `--schema <name>` — raw JSON inputSchema for one tool
   - `--help` / `-h` — usage help
   - Uses Streamable HTTP transport (POST /mcp); handles session handshake automatically
+- `mcp-upgrade.sh` — safe, reversible upgrade of this MCP server: fetch, show diff,
+  snapshot rollback point + tool schemas, pull, sync deps, run tests, restart, verify,
+  auto-rollback on failed restart. `--dry-run` / `--yes` / `--skip-tests` / `--rollback`
 
 ## Constraints
 - Never modify ../open5gs files
