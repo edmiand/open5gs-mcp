@@ -1,16 +1,69 @@
 """read_nf_config — read and return the YAML configuration for any Open5GS NF."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import yaml
 
+from tools._schema_util import ErrorDetail
 from tools.nf_lifecycle import VALID_NFS, _SCRIPT
 
 _CONFIG_DIR = _SCRIPT.parent / "install" / "etc" / "open5gs"
 
 # webui is managed by Node.js and has no YAML config in this directory
 _NFS_WITHOUT_YAML = frozenset({"webui"})
+
+# NFs whose YAML config is available (used by the open5gs://config/{nf} resource)
+CONFIG_NFS = sorted(VALID_NFS - _NFS_WITHOUT_YAML)
+
+
+class NfConfigError(Exception):
+    """Raised by _load_nf_config; str(exc) is a caller-facing message."""
+
+
+def _load_nf_config(nf: str) -> tuple[Any, Path]:
+    """Validate `nf` and parse its YAML config. Returns (data, config_file_path).
+
+    Shared by the read_nf_config tool (below) and the open5gs://config/{nf}
+    resource in server.py — both need identical validation and load logic.
+    """
+    nf = nf.lower().strip()
+    if nf not in VALID_NFS:
+        raise NfConfigError(f"Unknown NF '{nf}'. Valid: {sorted(VALID_NFS)}")
+    if nf in _NFS_WITHOUT_YAML:
+        raise NfConfigError(
+            f"'{nf}' has no YAML config (it is managed by Node.js). "
+            f"NFs with YAML configs: {CONFIG_NFS}"
+        )
+
+    cfg_path = _CONFIG_DIR / f"{nf}.yaml"
+    if not cfg_path.exists():
+        raise NfConfigError(f"Config file not found: {cfg_path}")
+
+    try:
+        with open(cfg_path) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        raise NfConfigError(f"YAML parse error in {cfg_path}: {exc}") from exc
+    except OSError as exc:
+        raise NfConfigError(f"Cannot read {cfg_path}: {exc}") from exc
+
+    return data, cfg_path
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class ReadConfigDetail(TypedDict):
+    ok: Literal[True]
+    nf: str
+    config_file: str
+    path: str | None
+    config: Any  # arbitrary YAML subtree — shape depends on `path`
+
+
+class ReadConfigResult(TypedDict):
+    summary: str
+    detail: ReadConfigDetail | ErrorDetail
 
 
 def _resolve_path(data: Any, path: str) -> Any:
@@ -40,13 +93,16 @@ def _resolve_path(data: Any, path: str) -> Any:
     return current
 
 
-def read_nf_config(nf: str, path: str | None = None) -> dict:
+def read_nf_config(nf: str, path: str | None = None) -> ReadConfigResult:
     """
     Read and return the YAML configuration for any Open5GS network function.
 
     Parses install/etc/open5gs/<nf>.yaml and returns the full config tree, or
     a specific subtree when path is supplied. Useful for verifying SBI addresses,
     NRF/SCP URIs, slice configs, and interface bindings without opening files manually.
+
+    A resource is also available for browsing without a tool call:
+    open5gs://config/{nf} returns the same full config tree.
 
     Args:
         nf:   NF name. Valid: amf smf upf ausf udm udr pcf nssf bsf nrf scp
@@ -75,29 +131,11 @@ def read_nf_config(nf: str, path: str | None = None) -> dict:
           "error": str
         }
     """
-    nf = nf.lower().strip()
-    if nf not in VALID_NFS:
-        _e = f"Unknown NF '{nf}'. Valid: {sorted(VALID_NFS)}"
-        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
-    if nf in _NFS_WITHOUT_YAML:
-        _e = (f"'{nf}' has no YAML config (it is managed by Node.js). "
-              f"NFs with YAML configs: {sorted(VALID_NFS - _NFS_WITHOUT_YAML)}")
-        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
-
-    cfg_path = _CONFIG_DIR / f"{nf}.yaml"
-    if not cfg_path.exists():
-        _e = f"Config file not found: {cfg_path}"
-        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
-
     try:
-        with open(cfg_path) as f:
-            data = yaml.safe_load(f)
-    except yaml.YAMLError as exc:
-        _e = f"YAML parse error in {cfg_path}: {exc}"
-        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
-    except OSError as exc:
-        _e = f"Cannot read {cfg_path}: {exc}"
-        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
+        data, cfg_path = _load_nf_config(nf)
+    except NfConfigError as exc:
+        return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}
+    nf = nf.lower().strip()
 
     if path:
         try:

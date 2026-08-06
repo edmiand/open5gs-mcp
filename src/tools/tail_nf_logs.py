@@ -206,9 +206,37 @@ def tail_nf_logs(
           }
         }
     """
-    # ── validate inputs ──────────────────────────────────────────────────────
+    err, nf_list, min_level, pattern, since_dt = _validate_tail_inputs(nf, level, grep, lines, since)
+    if err:
+        return err
 
-    # Normalise nf list
+    # ── read each NF ────────────────────────────────────────────────────────
+
+    all_records: list[dict] = []
+    nf_counts: dict[str, int] = {}
+    errors: dict[str, str] = {}
+    earliest_window: datetime | None = None
+    per_nf_limit = max(lines, 200)
+
+    for n in nf_list:
+        recs, window_start, err_msg = _read_nf_log(n, min_level, pattern, since_dt, per_nf_limit)
+        if err_msg:
+            errors[n] = err_msg
+        nf_counts[n] = len(recs)
+        all_records.extend(recs)
+        if window_start and (earliest_window is None or window_start < earliest_window):
+            earliest_window = window_start
+
+    return _tail_finalize(all_records, errors, earliest_window, since_dt, nf_list, level, grep, lines, since)
+
+
+def _validate_tail_inputs(
+    nf: str | list[str], level: str, grep: str | None, lines: int, since: str | None,
+) -> tuple[TailLogsResult | None, list[str], int, re.Pattern | None, datetime | None]:
+    """Validate inputs and resolve NF list / level / grep pattern / since datetime.
+
+    Returns (error_result_or_None, nf_list, min_level, pattern, since_dt).
+    """
     if isinstance(nf, str):
         nf_list = _ALL_NFS if nf.lower() == "all" else [nf.lower()]
     else:
@@ -217,64 +245,53 @@ def tail_nf_logs(
     invalid = [n for n in nf_list if n not in _ALL_NFS]
     if invalid:
         _e = f"Unknown NF(s): {invalid}. Valid: {_ALL_NFS}"
-        return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
+        return ({"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}, [], 0, None, None)
 
     if not (1 <= lines <= 500):
-        return {"summary": "Error: lines must be between 1 and 500.",
-                "detail": {"ok": False, "error": "lines must be between 1 and 500"}}
+        return ({"summary": "Error: lines must be between 1 and 500.",
+                  "detail": {"ok": False, "error": "lines must be between 1 and 500"}}, [], 0, None, None)
 
     level = level.lower()
     if level not in {"debug", "info", "warn", "warning", "error"}:
-        return {"summary": "Error: level must be one of: debug info warn error.",
-                "detail": {"ok": False, "error": "level must be one of: debug info warn error"}}
+        return ({"summary": "Error: level must be one of: debug info warn error.",
+                  "detail": {"ok": False, "error": "level must be one of: debug info warn error"}}, [], 0, None, None)
 
-    # Compile grep pattern
     pattern: re.Pattern | None = None
     if grep:
         try:
             pattern = re.compile(grep, re.IGNORECASE)
         except re.error as exc:
             _e = f"Invalid grep pattern: {exc}"
-            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
+            return ({"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}, [], 0, None, None)
 
-    # Parse since
     try:
         since_dt = _parse_since(since)
     except ValueError as exc:
-        return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}
+        return ({"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}, [], 0, None, None)
 
-    min_level = _min_level_int(level)
+    return None, nf_list, _min_level_int(level), pattern, since_dt
 
-    # ── read each NF ────────────────────────────────────────────────────────
 
-    all_records: list[dict] = []
-    nf_counts: dict[str, int] = {}
-    errors: dict[str, str] = {}
-    earliest_window: datetime | None = None
-    # Per-NF limit: avoid one noisy NF drowning out others
-    per_nf_limit = max(lines, 200)
-
-    for n in nf_list:
-        recs, window_start, err = _read_nf_log(n, min_level, pattern, since_dt, per_nf_limit)
-        if err:
-            errors[n] = err
-        nf_counts[n] = len(recs)
-        all_records.extend(recs)
-        if window_start and (earliest_window is None or window_start < earliest_window):
-            earliest_window = window_start
-
-    # ── sort by timestamp and cap ────────────────────────────────────────────
-
+def _tail_finalize(
+    all_records: list[dict],
+    errors: dict[str, str],
+    earliest_window: datetime | None,
+    since_dt: datetime | None,
+    nf_list: list[str],
+    level: str,
+    grep: str | None,
+    lines: int,
+    since: str | None,
+) -> TailLogsResult:
+    """Sort, cap, and serialise the accumulated records into the final result."""
     all_records.sort(key=lambda r: r["ts"])
     total_matched = len(all_records)
     all_records = all_records[-lines:]  # keep the most recent `lines` entries
 
     # Recount per-NF after the global cap so nf_counts matches the returned lines.
-    nf_counts = {}
+    nf_counts: dict[str, int] = {}
     for r in all_records:
         nf_counts[r["nf"]] = nf_counts.get(r["nf"], 0) + 1
-
-    # ── serialise ────────────────────────────────────────────────────────────
 
     output = []
     for r in all_records:

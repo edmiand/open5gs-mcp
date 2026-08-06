@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import mcp.server.sse as _mcp_sse
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from mcp.types import ToolAnnotations
+from mcp.types import ToolAnnotations, Completion
 from mcp.server.auth.middleware.auth_context import get_access_token as _get_access_token
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import (
@@ -48,8 +48,17 @@ from tools.list_ue_sessions import (
 from tools.tail_nf_logs import (
     tail_nf_logs as _tail_nf_logs,
     TailLogsResult,
+    _validate_tail_inputs,
+    _tail_finalize,
+    _read_nf_log,
 )
-from tools.read_nf_config import read_nf_config as _read_nf_config
+from tools.read_nf_config import (
+    read_nf_config as _read_nf_config,
+    ReadConfigResult,
+    NfConfigError,
+    _load_nf_config,
+    CONFIG_NFS,
+)
 from tools.ue_trace import (
     get_ue_trace as _get_ue_trace,
     UeTraceResult,
@@ -584,6 +593,8 @@ async def tail_nf_logs(
                           'datetime ("2026-06-03T20:00:00"). Omit to read from '
                           "the current tail without a time constraint."),
     ] = None,
+    *,
+    ctx: Context,
 ) -> TailLogsResult:
     """Filtered log reads across one or more Open5GS NF log files.
 
@@ -599,7 +610,32 @@ async def tail_nf_logs(
     truncated: true and earliest_available (the oldest timestamp actually
     readable) — results before that point are missing, not absent.
     """
-    return await asyncio.to_thread(_tail_nf_logs, nf, level, grep, lines, since)
+    err, nf_list, min_level, pattern, since_dt = await asyncio.to_thread(
+        _validate_tail_inputs, nf, level, grep, lines, since,
+    )
+    if err:
+        return err
+
+    all_records: list[dict] = []
+    errors: dict[str, str] = {}
+    earliest_window = None
+    per_nf_limit = max(lines, 200)
+
+    for n in nf_list:
+        recs, window_start, err_msg = await asyncio.to_thread(
+            _read_nf_log, n, min_level, pattern, since_dt, per_nf_limit,
+        )
+        if err_msg:
+            errors[n] = err_msg
+            await ctx.warning(f"{n}: {err_msg}")
+        all_records.extend(recs)
+        if window_start and (earliest_window is None or window_start < earliest_window):
+            earliest_window = window_start
+
+    return await asyncio.to_thread(
+        _tail_finalize, all_records, errors, earliest_window, since_dt,
+        nf_list, level, grep, lines, since,
+    )
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -615,7 +651,7 @@ async def read_nf_config(
                           'numerically: "amf.sbi.server.0". Omit for the '
                           "full tree."),
     ] = None,
-) -> dict:
+) -> ReadConfigResult:
     """Read the YAML configuration for any Open5GS network function.
 
     Parses install/etc/open5gs/<nf>.yaml and returns the full config tree,
@@ -623,6 +659,9 @@ async def read_nf_config(
     NFs can't communicate (mismatched SBI addresses, wrong NRF/SCP URI),
     verify slice or subnet configuration, or check interface bindings — all
     without opening files manually.
+
+    A resource is also available for browsing without spending a tool call:
+    open5gs://config/{nf} returns the same full config tree (no path drill-down).
 
     Useful paths:
       "amf.sbi"                → SBI server/client addresses
@@ -637,6 +676,32 @@ async def read_nf_config(
     config (the parsed subtree — full tree when path omitted).
     """
     return await asyncio.to_thread(_read_nf_config, nf, path)
+
+
+@mcp.resource(
+    "open5gs://config/{nf}",
+    name="nf_config",
+    title="Open5GS NF YAML config",
+    description="Full parsed YAML configuration for one Open5GS network "
+                "function (webui excluded — it has no YAML config).",
+    mime_type="application/json",
+)
+async def nf_config_resource(nf: str) -> dict:
+    """Read-only resource form of read_nf_config — always the full tree, no path drill-down."""
+    try:
+        data, _ = await asyncio.to_thread(_load_nf_config, nf)
+    except NfConfigError as exc:
+        raise ValueError(str(exc)) from exc
+    return data
+
+
+@mcp.completion()
+async def _complete_nf_config(ref, argument, context):
+    """Offer NF-name completions for the open5gs://config/{nf} resource template."""
+    if getattr(ref, "uri", None) == "open5gs://config/{nf}" and argument.name == "nf":
+        matches = [n for n in CONFIG_NFS if n.startswith(argument.value.lower())]
+        return Completion(values=matches, total=len(matches), has_more=False)
+    return Completion(values=[], total=0, has_more=False)
 
 
 @mcp.tool(annotations=_READ_ONLY)
