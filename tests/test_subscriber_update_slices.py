@@ -111,12 +111,27 @@ class TestReplaceValidation:
 # ── replace: happy path ───────────────────────────────────────────────────────
 
 @pytest.mark.integration
+class TestReplaceRequiresConfirm:
+    @patch("tools.subscriber_update_slices.get_subscribers_col")
+    def test_no_confirm_writes_nothing(self, mock_get_col):
+        col = make_mock_col([make_subscriber(IMSI)])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=_VALID_SLICE))
+        assert r["ok"] is False
+        assert r["confirm_required"] is True
+        assert r["proposed_slices"] == _VALID_SLICE
+        assert isinstance(r["current_slices"], list)
+        col.replace_one.assert_not_called()
+
+
 class TestReplaceHappyPath:
     @patch("tools.subscriber_update_slices.get_subscribers_col")
     def test_valid_update(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=_VALID_SLICE))
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="replace", slices=_VALID_SLICE, confirm=True,
+        ))
         assert r["ok"] is True
         assert col.replace_one.called
 
@@ -125,7 +140,7 @@ class TestReplaceHappyPath:
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
         r = unwrap(subscriber_update_slices(
-            imsi=IMSI, action="replace", slices=_TWO_DNNs,
+            imsi=IMSI, action="replace", slices=_TWO_DNNs, confirm=True,
         ))
         assert r["ok"] is True
 
@@ -133,7 +148,9 @@ class TestReplaceHappyPath:
     def test_secrets_redacted(self, mock_get_col):
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
-        r = unwrap(subscriber_update_slices(imsi=IMSI, action="replace", slices=_VALID_SLICE))
+        r = unwrap(subscriber_update_slices(
+            imsi=IMSI, action="replace", slices=_VALID_SLICE, confirm=True,
+        ))
         assert r["ok"] is True
         sec = r["subscriber"]["security"]
         assert sec["k"] == "***"
@@ -144,7 +161,7 @@ class TestReplaceHappyPath:
         col = make_mock_col([make_subscriber(IMSI)])
         mock_get_col.return_value = col
         r = unwrap(subscriber_update_slices(
-            imsi=f"imsi-{IMSI}", action="replace", slices=_VALID_SLICE,
+            imsi=f"imsi-{IMSI}", action="replace", slices=_VALID_SLICE, confirm=True,
         ))
         assert r["ok"] is True
 

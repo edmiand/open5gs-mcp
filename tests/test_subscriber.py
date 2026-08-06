@@ -178,10 +178,20 @@ class TestDelete:
         assert r["ok"] is False
 
     @patch("tools.subscriber.get_subscribers_col")
-    def test_happy_path(self, mock_get_col):
+    def test_requires_confirm(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
         r = unwrap(subscriber(action="delete", imsi=IMSI))
+        assert r["ok"] is False
+        assert r["confirm_required"] is True
+        assert r["subscriber"]["imsi"] == IMSI
+        col.delete_one.assert_not_called()
+
+    @patch("tools.subscriber.get_subscribers_col")
+    def test_happy_path(self, mock_get_col):
+        col = make_mock_col(docs=[make_subscriber(IMSI)])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber(action="delete", imsi=IMSI, confirm=True))
         assert r["ok"] is True
         assert r["deleted"] is True
         assert r["imsi"] == IMSI
@@ -190,6 +200,15 @@ class TestDelete:
     def test_not_found_returns_deleted_false(self, mock_get_col):
         col = make_mock_col(docs=[make_subscriber(IMSI)])
         col.delete_one.return_value = MagicMock(deleted_count=0)
+        mock_get_col.return_value = col
+        r = unwrap(subscriber(action="delete", imsi="999700000000099", confirm=True))
+        assert r["ok"] is True
+        assert r["deleted"] is False
+
+    @patch("tools.subscriber.get_subscribers_col")
+    def test_not_found_does_not_require_confirm(self, mock_get_col):
+        # Nothing to preview/delete — should resolve directly without confirm.
+        col = make_mock_col(docs=[make_subscriber(IMSI)])
         mock_get_col.return_value = col
         r = unwrap(subscriber(action="delete", imsi="999700000000099"))
         assert r["ok"] is True

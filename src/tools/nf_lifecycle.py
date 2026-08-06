@@ -9,6 +9,11 @@ Vanilla Open5GS manages NFs via systemd (systemctl start open5gs-amfd, etc.).
 import re
 import subprocess
 from pathlib import Path
+from typing import Annotated, Literal, NotRequired, TypedDict
+
+from pydantic import Field as _PField
+
+from tools._schema_util import ErrorDetail
 
 _SCRIPT = Path(__file__).resolve().parent.parent.parent.parent / "open5gs" / "open5gs-ctl.sh"
 
@@ -16,6 +21,37 @@ VALID_NFS = frozenset(
     {"amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "nrf", "scp", "webui"}
 )
 VALID_ACTIONS = frozenset({"start", "stop", "restart", "status"})
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class NfStatusEntry(TypedDict):
+    status: Literal["running", "stopped"]
+    pid: int | None
+    uptime: str | None
+
+
+class NfLifecycleActionEntry(TypedDict):
+    result: str
+    pid: int | None
+    message: NotRequired[str]
+
+
+class NfLifecycleDetail(TypedDict):
+    ok: bool
+    action: Literal["start", "stop", "restart", "status"]
+    nfs: dict[str, NfStatusEntry | NfLifecycleActionEntry]
+    stderr: NotRequired[str]
+    error: NotRequired[str]
+    raw_output: NotRequired[str]
+
+
+class NfLifecycleResult(TypedDict):
+    summary: str
+    # NfLifecycleDetail.ok can be False too (partial per-NF failure), which
+    # overlaps ErrorDetail's shape — force left-to-right so the richer,
+    # more-specific match (action/nfs preserved) wins over the generic one.
+    detail: Annotated[NfLifecycleDetail | ErrorDetail, _PField(union_mode="left_to_right")]
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_ROW_RE = re.compile(r"^(\S+)\s+(running|stopped)\s*(\d+)?\s*(\S+)?")
@@ -80,7 +116,7 @@ def _parse_lifecycle(stdout: str) -> dict[str, dict]:
     return result
 
 
-def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> dict:
+def nf_lifecycle(action: str, nf: str | list[str] | None = None) -> NfLifecycleResult:
     """
     Manage Open5GS network function lifecycle.
 

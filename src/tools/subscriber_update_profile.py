@@ -1,10 +1,25 @@
 """Update subscriber profile parameters in Open5GS MongoDB."""
 
+from typing import Literal, TypedDict
+
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
+from ._schema_util import ErrorDetail
 from ._subscriber_util import (
-	normalize_imsi, get_subscribers_col, serialize, redact, deep_merge
+	normalize_imsi, get_subscribers_col, serialize, redact, deep_merge, SubscriberDoc
 )
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class ProfileUpdateDetail(TypedDict):
+	ok: Literal[True]
+	subscriber: SubscriberDoc
+
+
+class ProfileUpdateResult(TypedDict):
+	summary: str
+	detail: ProfileUpdateDetail | ErrorDetail
 
 
 def subscriber_update_profile(
@@ -21,7 +36,7 @@ def subscriber_update_profile(
 	network_access_mode: int | None = None,
 	operator_determined_barring: int | None = None,
 	subscribed_rau_tau_timer: int | None = None,
-) -> dict:
+) -> ProfileUpdateResult:
 	"""
 	Update subscriber profile parameters (non-slice fields).
 

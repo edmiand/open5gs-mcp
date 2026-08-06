@@ -21,14 +21,26 @@ from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from mcp.server.auth.middleware.auth_context import get_access_token as _get_access_token
 from sse_starlette.sse import EventSourceResponse as _ESR
-from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
+from tools.nf_lifecycle import (
+    nf_lifecycle as _nf_lifecycle,
+    NfLifecycleResult,
+)
 from tools.system_health_snapshot import (
     system_health_snapshot as _health,
     HealthResult,
 )
-from tools.subscriber import subscriber as _subscriber
-from tools.subscriber_update_profile import subscriber_update_profile as _subscriber_update_profile
-from tools.subscriber_update_slices import subscriber_update_slices as _subscriber_update_slices
+from tools.subscriber import (
+    subscriber as _subscriber,
+    SubscriberResult,
+)
+from tools.subscriber_update_profile import (
+    subscriber_update_profile as _subscriber_update_profile,
+    ProfileUpdateResult,
+)
+from tools.subscriber_update_slices import (
+    subscriber_update_slices as _subscriber_update_slices,
+    SliceUpdateResult,
+)
 from tools.list_ue_sessions import (
     list_ue_sessions as _list_ue_sessions,
     UeSessionsResult,
@@ -215,7 +227,7 @@ async def nf_lifecycle(
         Field(description='NF names to target, e.g. ["amf", "smf"]. '
                           "Omit to target all NFs."),
     ] = None,
-) -> dict:
+) -> NfLifecycleResult:
     """Start, stop, restart, or query the status of Open5GS network functions.
 
     Use this to bring NFs up or down, restart a crashed NF, or check which NFs are
@@ -289,7 +301,15 @@ async def subscriber(
                           "access_restriction_data, operator_determined_barring. "
                           'E.g. {"subscriber_status": 1} lists barred subscribers.'),
     ] = None,
-) -> dict:
+    confirm: Annotated[
+        bool,
+        Field(description="For delete only. Deletion is irreversible: the first "
+                          "call (confirm=False) deletes nothing and instead "
+                          "returns the subscriber that would be deleted for "
+                          "review; re-call identically with confirm=True to "
+                          "actually delete it."),
+    ] = False,
+) -> SubscriberResult:
     """Manage subscriber lifecycle — read, list, create, or delete.
 
     Use this to provision a new subscriber (create), look up their stored profile
@@ -298,15 +318,17 @@ async def subscriber(
     subscriber_update_slices instead.
 
     detail contains:
-      read/create: ok, subscriber (secrets redacted)
-      list:        ok, subscribers, count (total matching documents in the DB),
-                   returned (documents in this page, ≤ limit)
-      delete:      ok, deleted (false when the IMSI did not exist), imsi
+      read/create:            ok, subscriber (secrets redacted)
+      list:                   ok, subscribers, count (total matching documents in
+                              the DB), returned (documents in this page, ≤ limit)
+      delete (confirm=False): ok=false, confirm_required=true, subscriber (preview
+                              of what would be deleted), error — nothing deleted yet
+      delete (confirm=True):  ok, deleted (false when the IMSI did not exist), imsi
     """
     if _scope_enforce and action in ("create", "delete"):
         if err := _require_write_scope("subscriber mutations"):
             return err
-    return await asyncio.to_thread(_subscriber, action, imsi, data, limit, filter)
+    return await asyncio.to_thread(_subscriber, action, imsi, data, limit, filter, confirm)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
@@ -375,7 +397,7 @@ async def subscriber_update_profile(
         int | None,
         Field(description="Periodic RAU/TAU timer in minutes (default 12)."),
     ] = None,
-) -> dict:
+) -> ProfileUpdateResult:
     """Update subscriber profile parameters (excludes slice/session configuration).
 
     Use this to change an existing subscriber's operational status (barring, network
@@ -452,7 +474,15 @@ async def subscriber_update_slices(
         Field(description="remove_session only (required): session name (DNN) "
                           "to remove."),
     ] = None,
-) -> dict:
+    confirm: Annotated[
+        bool,
+        Field(description="replace only. Replacing discards existing slices, so "
+                          "the first call (confirm=False) writes nothing and "
+                          "instead returns current_slices (what would be lost) "
+                          "and proposed_slices (what you sent) for review; "
+                          "re-call identically with confirm=True to apply."),
+    ] = False,
+) -> SliceUpdateResult:
     """Update subscriber slice and session (DNN) configuration.
 
     ── replace ───────────────────────────────────────────────────────────────────
@@ -461,6 +491,9 @@ async def subscriber_update_slices(
     (read the current config first via `subscriber action="read"`). Do NOT use this
     to rename or add/remove a single DNN — use rename_session/upsert_session/
     remove_session instead, which preserve everything else untouched.
+    Because this discards data, call it once to review current_slices/
+    proposed_slices (confirm=False, the default), then re-call identically with
+    confirm=True to apply.
 
     ── rename_session ────────────────────────────────────────────────────────────
     Rename a session (DNN) within a slice, preserving all QoS/AMBR/PCC fields.
@@ -478,15 +511,18 @@ async def subscriber_update_slices(
     one session after removal. Trigger: decommissioning a DNN from a subscriber.
     Requires sst, name (and sd when ambiguous).
 
-    detail contains: ok, subscriber (updated document, secrets redacted) with
-    slice: [{sst, sd, session: [...]}].
+    detail contains:
+      success:                 ok, subscriber (updated document, secrets redacted)
+                               with slice: [{sst, sd, session: [...]}]
+      replace, confirm=False: ok=false, confirm_required=true, current_slices,
+                               proposed_slices, error — nothing written yet
     """
     if _scope_enforce:
         if err := _require_write_scope("subscriber_update_slices"):
             return err
     return await asyncio.to_thread(
         _subscriber_update_slices,
-        imsi, action, slices, sst, sd, old_name, new_name, session, name,
+        imsi, action, slices, sst, sd, old_name, new_name, session, name, confirm,
     )
 
 

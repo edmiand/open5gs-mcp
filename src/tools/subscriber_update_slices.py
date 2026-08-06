@@ -1,14 +1,46 @@
 """Update subscriber slice and session configuration in Open5GS MongoDB."""
 
 import copy
+from typing import Annotated, Literal, TypedDict
 
+from pydantic import Field as _PField
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
+from ._schema_util import ErrorDetail
 from ._subscriber_util import (
-    normalize_imsi, get_subscribers_col, serialize, redact, deep_merge
+    normalize_imsi, get_subscribers_col, serialize, redact, deep_merge, SubscriberDoc
 )
 
 _VALID_ACTIONS = ("replace", "rename_session", "upsert_session", "remove_session")
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class SliceUpdateDetail(TypedDict):
+    ok: Literal[True]
+    subscriber: SubscriberDoc
+
+
+class ReplaceConfirmRequiredDetail(TypedDict):
+    """Returned instead of replacing when confirm=False — discards untouched
+    slices, so preview what would be lost before applying."""
+    ok: Literal[False]
+    error: str
+    confirm_required: Literal[True]
+    current_slices: list[dict]
+    proposed_slices: list[dict]
+
+
+class SliceUpdateResult(TypedDict):
+    summary: str
+    # ReplaceConfirmRequiredDetail.ok is Literal[False] too, overlapping
+    # ErrorDetail's shape — force left-to-right so the richer, more-specific
+    # match (confirm_required/current_slices/proposed_slices) wins over the
+    # generic one.
+    detail: Annotated[
+        SliceUpdateDetail | ReplaceConfirmRequiredDetail | ErrorDetail,
+        _PField(union_mode="left_to_right"),
+    ]
 
 
 class _AmbiguousSlice(Exception):
@@ -44,7 +76,9 @@ def subscriber_update_slices(
     session: dict | None = None,
     # remove_session
     name: str | None = None,
-) -> dict:
+    # replace confirmation
+    confirm: bool = False,
+) -> SliceUpdateResult:
     """
     Update subscriber slice and session configuration.
 
@@ -56,6 +90,11 @@ def subscriber_update_slices(
     config first via subscriber action="read"). To rename a DNN or add/remove a
     single session without touching the rest, use rename_session/upsert_session/
     remove_session instead.
+
+    Because this discards data, the first call (confirm=False, the default)
+    does not write anything — it returns current_slices (what would be lost)
+    and proposed_slices (what you sent) so the discard can be reviewed. Once
+    confirmed correct, re-call identically with confirm=True to apply.
 
     slices:        List of slice objects (required). Each slice:
       {
@@ -110,8 +149,10 @@ def subscriber_update_slices(
     name: Session name (DNN) to remove (required).
 
     ── Returns ──────────────────────────────────────────────────────────────────
-    success: {"ok": True,  "subscriber": {...}}  (secrets redacted)
-    error:   {"ok": False, "error": str}
+    success:              {"ok": True,  "subscriber": {...}}  (secrets redacted)
+    replace, confirm=False: {"ok": False, "confirm_required": True,
+                             "current_slices": [...], "proposed_slices": [...], "error": str}
+    error:                 {"ok": False, "error": str}
     """
     norm = normalize_imsi(imsi)
     if norm is None:
@@ -123,7 +164,7 @@ def subscriber_update_slices(
         return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
     if action == "replace":
-        return _replace(norm, slices)
+        return _replace(norm, slices, confirm)
     if action == "rename_session":
         return _rename_session(norm, sst, sd, old_name, new_name)
     if action == "upsert_session":
@@ -171,7 +212,7 @@ def _save(col, norm: str, doc: dict):
 
 # ── actions ───────────────────────────────────────────────────────────────────
 
-def _replace(norm: str, slices) -> dict:
+def _replace(norm: str, slices, confirm: bool) -> dict:
     if not isinstance(slices, list):
         return _err("slices must be a list")
     if not slices:
@@ -197,6 +238,26 @@ def _replace(norm: str, slices) -> dict:
         return err
 
     doc = serialize(doc)
+    current_slices = doc.get("slice", [])
+
+    if not confirm:
+        _msg = (
+            f"Replacing the slice configuration for subscriber {norm} discards "
+            f"{len(current_slices)} existing slice(s) not carried over in the new list. "
+            f"Review current_slices and proposed_slices, then re-call identically "
+            f"with confirm=True to apply."
+        )
+        return {
+            "summary": f"Confirmation required: {_msg}",
+            "detail": {
+                "ok": False,
+                "confirm_required": True,
+                "current_slices": current_slices,
+                "proposed_slices": slices,
+                "error": _msg,
+            },
+        }
+
     doc["slice"] = slices
 
     err, saved = _save(col, norm, doc)

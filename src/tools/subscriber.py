@@ -1,15 +1,64 @@
 """Subscriber lifecycle — read, list, create, delete."""
 
+from typing import Annotated, Literal, TypedDict
+
+from pydantic import Field as _PField
 from pymongo import ASCENDING
 from pymongo.errors import ConnectionFailure, DuplicateKeyError, ServerSelectionTimeoutError
 
+from ._schema_util import ErrorDetail
 from ._subscriber_util import (
     normalize_imsi, get_subscribers_col, serialize, redact, deep_merge,
-    DEFAULT_SUBSCRIBER,
+    DEFAULT_SUBSCRIBER, SubscriberDoc,
 )
 
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class SubscriberReadCreateDetail(TypedDict):
+    ok: Literal[True]
+    subscriber: SubscriberDoc
+
+
+class SubscriberListDetail(TypedDict):
+    ok: Literal[True]
+    subscribers: list[SubscriberDoc]
+    count: int
+    returned: int
+
+
+class SubscriberDeleteDetail(TypedDict):
+    ok: Literal[True]
+    deleted: bool
+    imsi: str
+
+
+class DeleteConfirmRequiredDetail(TypedDict):
+    """Returned instead of deleting when confirm=False — irreversible op, ask first."""
+    ok: Literal[False]
+    error: str
+    confirm_required: Literal[True]
+    subscriber: SubscriberDoc  # preview of what would be deleted
+
+
+class SubscriberResult(TypedDict):
+    summary: str
+    # DeleteConfirmRequiredDetail.ok is Literal[False] too, overlapping
+    # ErrorDetail's shape — force left-to-right so the richer, more-specific
+    # match (confirm_required/subscriber preserved) wins over the generic one.
+    detail: Annotated[
+        SubscriberReadCreateDetail
+        | SubscriberListDetail
+        | SubscriberDeleteDetail
+        | DeleteConfirmRequiredDetail
+        | ErrorDetail,
+        _PField(union_mode="left_to_right"),
+    ]
+
 def _wrap_subscriber(action: str, result: dict) -> dict:
-    if not result.get("ok"):
+    if result.get("confirm_required"):
+        summary = f"Confirmation required: {result['error']}"
+    elif not result.get("ok"):
         summary = f"Error: {result.get('error', 'unknown error')}"
     elif action == "read":
         summary = f"Subscriber {result['subscriber']['imsi']} found."
@@ -39,7 +88,8 @@ def subscriber(
     data: dict | None = None,
     limit: int = 100,
     filter: dict | None = None,
-) -> dict:
+    confirm: bool = False,
+) -> SubscriberResult:
     """
     Manage subscriber lifecycle.
 
@@ -72,12 +122,20 @@ def subscriber(
                   operator_determined_barring (int)
                 Example: {"subscriber_status": 1} lists all barred subscribers.
 
+        confirm: For delete only. Deletion is irreversible — the first call
+                (confirm=False, the default) does not delete anything; it
+                returns the subscriber that would be deleted so the caller
+                can review it, then must re-call with confirm=True to
+                actually delete.
+
     Returns:
         read:   {"ok": True, "subscriber": {...}} — secrets redacted
         list:   {"ok": True, "subscribers": [...], "count": int, "returned": int}
                   count = total matching documents in DB; returned = documents in this page (≤ limit)
         create: {"ok": True, "subscriber": {...}} — secrets redacted
-        delete: {"ok": True, "deleted": bool, "imsi": str}
+        delete (confirm=False): {"ok": False, "confirm_required": True,
+                  "subscriber": {...}, "error": str} — nothing deleted yet
+        delete (confirm=True):  {"ok": True, "deleted": bool, "imsi": str}
         error:  {"ok": False, "error": str}
     """
     if action == "read":
@@ -87,7 +145,7 @@ def subscriber(
     if action == "create":
         return _wrap_subscriber("create", _create(imsi, data))
     if action == "delete":
-        return _wrap_subscriber("delete", _delete(imsi))
+        return _wrap_subscriber("delete", _delete(imsi, confirm))
     _e = f"Unknown action '{action}'. Valid: read, list, create, delete"
     return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
 
@@ -155,7 +213,7 @@ def _create(imsi: str | None, data: dict | None) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _delete(imsi: str | None) -> dict:
+def _delete(imsi: str | None, confirm: bool) -> dict:
     if not imsi:
         return {"ok": False, "error": "imsi is required for action='delete'"}
     norm = normalize_imsi(imsi)
@@ -163,6 +221,21 @@ def _delete(imsi: str | None) -> dict:
         return {"ok": False, "error": f"Invalid IMSI '{imsi}'. Expected 10-15 digits or 'imsi-<digits>'."}
     try:
         col = get_subscribers_col()
+        doc = col.find_one({"imsi": norm})
+        if doc is None:
+            return {"ok": True, "deleted": False, "imsi": norm}
+
+        if not confirm:
+            return {
+                "ok": False,
+                "confirm_required": True,
+                "subscriber": redact(serialize(doc)),
+                "error": (
+                    f"Deleting subscriber {norm} is irreversible. Review the "
+                    f"subscriber above, then re-call with confirm=True to delete it."
+                ),
+            }
+
         result = col.delete_one({"imsi": norm})
         return {"ok": True, "deleted": result.deleted_count == 1, "imsi": norm}
     except (ConnectionFailure, ServerSelectionTimeoutError) as exc:

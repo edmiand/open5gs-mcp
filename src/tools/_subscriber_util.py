@@ -2,7 +2,7 @@
 
 import copy
 import re
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 import bson
 from pymongo import MongoClient
@@ -12,6 +12,34 @@ _MONGO_URI = "mongodb://localhost:27017"
 _DB = "open5gs"
 _COL = "subscribers"
 _IMSI_RE = re.compile(r"^\d{10,15}$")
+
+
+# ── structured output schema, shared across all three subscriber tools ────────
+
+class SubscriberDoc(TypedDict):
+    """The subscriber document shape, as returned to callers (security.k/opc redacted).
+
+    Only `imsi` is guaranteed — read/list/create fetch or produce documents
+    that may originate outside this tool (WebUI, older schema versions), and
+    the two update tools' responses never carry `_id` (popped before save).
+    Every other DEFAULT_SUBSCRIBER template field is therefore NotRequired.
+    """
+    imsi: str
+    _id: NotRequired[str]
+    schema_version: NotRequired[int]
+    msisdn: NotRequired[list[str]]
+    imeisv: NotRequired[list[str] | str]  # observed as a bare string on ≥1 real document
+    mme_host: NotRequired[list[str]]
+    mme_realm: NotRequired[list[str]]
+    purge_flag: NotRequired[list[bool]]
+    security: NotRequired[dict]
+    ambr: NotRequired[dict]
+    slice: NotRequired[list[dict]]
+    access_restriction_data: NotRequired[int]
+    subscriber_status: NotRequired[int]
+    operator_determined_barring: NotRequired[int]
+    network_access_mode: NotRequired[int]
+    subscribed_rau_tau_timer: NotRequired[int]
 
 
 def normalize_imsi(raw: str) -> str | None:
