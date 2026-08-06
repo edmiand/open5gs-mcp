@@ -2,10 +2,56 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Literal, NotRequired, TypedDict
 
 from tools._log_util import _ANSI_RE, _parse_line
 from tools._nf_util import LOG_DIR as _LOG_DIR
+from tools._schema_util import ErrorDetail
 from tools._subscriber_util import normalize_supi as _normalize_supi_fn
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+TraceEvent = TypedDict("TraceEvent", {
+    "timestamp": str,
+    "nf": str,
+    "level": str,
+    "direction": Literal["inbound", "outbound", "internal"],
+    "message_type": str,
+    "from": str,
+    "to": str,
+    "message": str,
+    "note": NotRequired[str],
+})
+
+
+class TimeRange(TypedDict):
+    start: str
+    end: str
+
+
+class TraceSummary(TypedDict):
+    registration_success: bool
+    pdu_session_success: bool
+    ue_ip_assigned: str | None
+    errors: list[str]
+    total_events: int
+
+
+class UeTraceDetail(TypedDict):
+    ok: Literal[True]
+    supi: str
+    time_range: TimeRange
+    summary: TraceSummary
+    events: list[TraceEvent]
+    mermaid_hint: str
+    events_truncated: NotRequired[str]
+    nf_errors: NotRequired[dict[str, str]]
+
+
+class UeTraceResult(TypedDict):
+    summary: str
+    detail: UeTraceDetail | ErrorDetail
 
 # NRF excluded — its logs contain NF-lifecycle events, not per-UE signaling (Fix 3)
 _TRACE_NFS = ["amf", "ausf", "udm", "udr", "smf", "pcf", "upf"]
@@ -344,7 +390,7 @@ def get_ue_trace(
     include_nfs: list[str] | None = None,
     window_padding_seconds: int = 5,
     include_nrf: bool = False,
-) -> dict:
+) -> UeTraceResult:
     """Collect full e2e trace for a UE across Open5GS NFs.
 
     Args:
@@ -357,20 +403,70 @@ def get_ue_trace(
                                 events marked direction="internal".
 
     Returns structured trace data suitable for Mermaid sequence diagram generation.
+
+    Internally this delegates to the same phase functions the async MCP wrapper
+    drives individually (with progress reports between each NF) — see
+    _validate_trace_inputs / _trace_anchor_amf / _trace_search_one_nf /
+    _trace_search_upf / _trace_finalize below.
     """
-    # ── input validation ──────────────────────────────────────────────────────
+    err, full_supi, bare_imsi, nfs_to_search = _validate_trace_inputs(
+        supi, time_window_minutes, include_nfs, window_padding_seconds, include_nrf
+    )
+    if err:
+        return err
+
+    amf_result, nf_errors, search_start, search_end = _trace_anchor_amf(
+        bare_imsi, time_window_minutes, nfs_to_search, window_padding_seconds
+    )
+
+    nf_data: dict[str, dict] = {}
+    if "amf" in nfs_to_search:
+        nf_data["amf"] = amf_result
+
+    smf_seids: list[str] = []
+    for nf in (n for n in nfs_to_search if n not in ("amf", "upf")):
+        data, err_msg = _trace_search_one_nf(nf, search_start, search_end, bare_imsi)
+        nf_data[nf] = data
+        if err_msg:
+            nf_errors[nf] = err_msg
+        if nf == "smf":
+            smf_seids = data.get("seids", [])
+
+    if "upf" in nfs_to_search:
+        upf_data, err_msg = _trace_search_upf(search_start, search_end, smf_seids)
+        nf_data["upf"] = upf_data
+        if err_msg:
+            nf_errors["upf"] = err_msg
+
+    return _trace_finalize(full_supi, nf_data, nf_errors, search_start, search_end)
+
+
+def _validate_trace_inputs(
+    supi: str,
+    time_window_minutes: int,
+    include_nfs: list[str] | None,
+    window_padding_seconds: int,
+    include_nrf: bool,
+) -> tuple[UeTraceResult | None, str, str, list[str]]:
+    """Validate inputs and resolve the NF search list.
+
+    Returns (error_result_or_None, full_supi, bare_imsi, nfs_to_search).
+    """
     try:
         full_supi, bare_imsi = _normalize_supi_fn(supi)
     except ValueError as exc:
-        return {"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}}
+        return ({"summary": f"Error: {exc}", "detail": {"ok": False, "error": str(exc)}},
+                "", "", [])
 
     if not (1 <= time_window_minutes <= 1440):
-        return {"summary": "Error: time_window_minutes must be between 1 and 1440.",
-                "detail": {"ok": False, "error": "time_window_minutes must be between 1 and 1440"}}
+        return ({"summary": "Error: time_window_minutes must be between 1 and 1440.",
+                  "detail": {"ok": False, "error": "time_window_minutes must be between 1 and 1440"}},
+                "", "", [])
 
     if not (0 <= window_padding_seconds <= 60):
-        return {"summary": "Error: window_padding_seconds must be between 0 and 60.",
-                "detail": {"ok": False, "error": "window_padding_seconds must be between 0 and 60"}}
+        return ({"summary": "Error: window_padding_seconds must be between 0 and 60.",
+                  "detail": {"ok": False, "error": "window_padding_seconds must be between 0 and 60"}},
+                "", "", [])
 
     _valid_nfs = _TRACE_NFS + ["nrf"]
     if include_nfs is None:
@@ -380,12 +476,25 @@ def get_ue_trace(
         invalid = [n for n in nfs_to_search if n not in _valid_nfs]
         if invalid:
             _e = f"Unknown NF(s): {invalid}. Valid: {_valid_nfs}"
-            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
+            return ({"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}},
+                    "", "", [])
 
     if include_nrf and "nrf" not in nfs_to_search:
         nfs_to_search = nfs_to_search + ["nrf"]
 
-    # ── Step 1: anchor on AMF ─────────────────────────────────────────────────
+    return None, full_supi, bare_imsi, nfs_to_search
+
+
+def _trace_anchor_amf(
+    bare_imsi: str,
+    time_window_minutes: int,
+    nfs_to_search: list[str],
+    window_padding_seconds: int,
+) -> tuple[dict, dict[str, str], datetime, datetime]:
+    """Search AMF first (steps 1/1b) and derive the search window (step 2).
+
+    Returns (amf_result, nf_errors, search_start, search_end).
+    """
     nf_errors: dict[str, str] = {}
     amf_result: dict = {
         "lines": [], "first_ts": None, "last_ts": None,
@@ -398,7 +507,6 @@ def get_ue_trace(
         if amf_result["error"]:
             nf_errors["amf"] = amf_result["error"]
 
-    # ── Step 1b: collect pre-auth AMF events via NGAP IDs ────────────────────
     if "amf" in nfs_to_search and amf_result.get("first_ts") and amf_result.get("ngap_ids"):
         pre_auth = _search_amf_pre_auth(amf_result["ngap_ids"], amf_result["first_ts"])
         if pre_auth:
@@ -410,7 +518,6 @@ def get_ue_trace(
             if pre_first < amf_result["first_ts"]:
                 amf_result["first_ts"] = pre_first
 
-    # ── Step 2: derive search window (Fix 2: 5s padding, configurable) ───────
     if amf_result["first_ts"] and amf_result["last_ts"]:
         search_start = amf_result["first_ts"] - timedelta(seconds=window_padding_seconds)
         search_end = amf_result["last_ts"] + timedelta(seconds=window_padding_seconds)
@@ -418,7 +525,6 @@ def get_ue_trace(
         search_end = datetime.now(timezone.utc)
         search_start = search_end - timedelta(minutes=time_window_minutes)
 
-    # Warn if AMF log tail doesn't cover the full window (Fix 4)
     if "amf" in nfs_to_search:
         amf_tail_start = amf_result.get("tail_start_ts")
         if amf_tail_start and amf_tail_start > search_start:
@@ -430,53 +536,60 @@ def get_ue_trace(
             )
             nf_errors["amf"] = (nf_errors.get("amf", "") + "; " + warn).lstrip("; ")
 
-    # ── Step 3: search remaining NFs ──────────────────────────────────────────
-    nf_data: dict[str, dict] = {}
-    if "amf" in nfs_to_search:
-        nf_data["amf"] = amf_result
+    return amf_result, nf_errors, search_start, search_end
 
-    smf_seids: list[str] = []
-    non_amf_non_upf = [n for n in nfs_to_search if n not in ("amf", "upf")]
 
-    for nf in non_amf_non_upf:
-        data = _search_nf_by_time(nf, search_start, search_end, bare_imsi)
-        nf_data[nf] = data
-        if data["error"]:
-            nf_errors[nf] = data["error"]
-        tail_start = data.get("tail_start_ts")
-        if tail_start and tail_start > search_start:
-            warn = (
-                f"log tail starts at {tail_start.strftime('%m/%d %H:%M:%S')}, "
-                f"which is after the requested window start "
-                f"— trace may be incomplete; consider increasing _TAIL_BYTES"
-            )
-            nf_errors[nf] = (nf_errors.get(nf, "") + "; " + warn).lstrip("; ")
-        if nf == "smf":
-            smf_seids = data.get("seids", [])
+def _tail_coverage_warning(nf: str, data: dict, search_start: datetime) -> str | None:
+    tail_start = data.get("tail_start_ts")
+    if tail_start and tail_start > search_start:
+        return (
+            f"log tail starts at {tail_start.strftime('%m/%d %H:%M:%S')}, "
+            f"which is after the requested window start "
+            f"— trace may be incomplete; consider increasing _TAIL_BYTES"
+        )
+    return None
 
-    if "upf" in nfs_to_search:
-        if smf_seids:
-            upf_data = _search_nf_by_time("upf", search_start, search_end, seids=smf_seids)
-        else:
-            # No PFCP SEIDs available — searching UPF without them returns all
-            # traffic in the window, unrelated to this UE.
-            upf_data = {
-                "lines": [], "seids": [], "ue_ips": [], "dnns": [],
-                "tail_start_ts": None, "error": None,
-            }
-        nf_data["upf"] = upf_data
-        if upf_data["error"]:
-            nf_errors["upf"] = upf_data["error"]
-        tail_start = upf_data.get("tail_start_ts")
-        if tail_start and tail_start > search_start:
-            warn = (
-                f"log tail starts at {tail_start.strftime('%m/%d %H:%M:%S')}, "
-                f"which is after the requested window start "
-                f"— trace may be incomplete; consider increasing _TAIL_BYTES"
-            )
-            nf_errors["upf"] = (nf_errors.get("upf", "") + "; " + warn).lstrip("; ")
 
-    # ── Step 4: build structured events ───────────────────────────────────────
+def _trace_search_one_nf(
+    nf: str, search_start: datetime, search_end: datetime, bare_imsi: str
+) -> tuple[dict, str | None]:
+    """Search one non-AMF, non-UPF NF's log by time window. Returns (data, error_or_None)."""
+    data = _search_nf_by_time(nf, search_start, search_end, bare_imsi)
+    err = data["error"]
+    warn = _tail_coverage_warning(nf, data, search_start)
+    if warn:
+        err = (err + "; " + warn).lstrip("; ") if err else warn
+    return data, err
+
+
+def _trace_search_upf(
+    search_start: datetime, search_end: datetime, smf_seids: list[str]
+) -> tuple[dict, str | None]:
+    """Search UPF by PFCP SEIDs collected from SMF. Returns (data, error_or_None)."""
+    if smf_seids:
+        data = _search_nf_by_time("upf", search_start, search_end, seids=smf_seids)
+    else:
+        # No PFCP SEIDs available — searching UPF without them returns all
+        # traffic in the window, unrelated to this UE.
+        data = {
+            "lines": [], "seids": [], "ue_ips": [], "dnns": [],
+            "tail_start_ts": None, "error": None,
+        }
+    err = data["error"]
+    warn = _tail_coverage_warning("upf", data, search_start)
+    if warn:
+        err = (err + "; " + warn).lstrip("; ") if err else warn
+    return data, err
+
+
+def _trace_finalize(
+    full_supi: str,
+    nf_data: dict[str, dict],
+    nf_errors: dict[str, str],
+    search_start: datetime,
+    search_end: datetime,
+) -> UeTraceResult:
+    """Build structured events and the final summary/output (steps 4-5)."""
     all_events: list[dict] = []
 
     for nf, data in nf_data.items():

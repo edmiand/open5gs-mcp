@@ -2,14 +2,86 @@
 
 import time
 from datetime import datetime, timezone
+from typing import Literal, NotRequired, TypedDict
 
 import psutil
 
 from tools._nf_util import get_nf_pid as _get_nf_pid
+from tools._schema_util import ErrorDetail
 from tools.nf_lifecycle import VALID_NFS
 from tools.system_health_snapshot import _NFS
 
 _VALID_MONITOR_NFS = frozenset(VALID_NFS)
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class MemStats(TypedDict):
+    rss_mb: float
+    vms_mb: float
+    percent: float
+
+
+class IoStats(TypedDict):
+    read_bytes_per_s: int
+    write_bytes_per_s: int
+    read_total_mb: float
+    write_total_mb: float
+
+
+class NfUsageEntry(TypedDict):
+    status: Literal["running", "not_running", "error"]
+    pid: int | None
+    cpu_percent: NotRequired[float]
+    memory: NotRequired[MemStats]
+    threads: NotRequired[int]
+    io: NotRequired[IoStats]
+    io_note: NotRequired[str]
+    error: NotRequired[str]
+
+
+class UsageAggregates(TypedDict):
+    nfs_running: int
+    total_cpu_percent: float
+    total_rss_mb: float
+    total_io_read_bytes_per_s: int
+    total_io_write_bytes_per_s: int
+
+
+class DiskIo(TypedDict):
+    read_bytes_per_s: int
+    write_bytes_per_s: int
+
+
+class SystemStats(TypedDict):
+    cpu_count_logical: int
+    cpu_count_physical: int
+    cpu_percent_used: float
+    memory_total_mb: float
+    memory_available_mb: float
+    memory_used_mb: float
+    memory_percent_used: float
+    disk_io: NotRequired[DiskIo]
+
+
+class Open5gsShare(TypedDict):
+    cpu_pct_of_system_usage: float | None
+    memory_pct_of_total: float
+
+
+class ResourceUsageDetail(TypedDict):
+    ok: Literal[True]
+    timestamp: str
+    sample_interval_s: float
+    nfs: dict[str, NfUsageEntry]
+    aggregates: UsageAggregates
+    system: SystemStats
+    open5gs_share: Open5gsShare
+
+
+class ResourceUsageResult(TypedDict):
+    summary: str
+    detail: ResourceUsageDetail | ErrorDetail
 
 
 def nf_resource_usage(
@@ -78,20 +150,49 @@ def nf_resource_usage(
           },
         }
     """
+    err, target_nfs = _validate(nfs, sample_interval)
+    if err:
+        return err
+    primed = _prime_snapshot(target_nfs)
+    time.sleep(sample_interval)
+    return _finish_snapshot(target_nfs, primed, sample_interval)
+
+
+def _validate(
+    nfs: list[str] | None, sample_interval: float
+) -> tuple[ResourceUsageResult | None, list[str]]:
+    """Validate inputs and resolve the target NF list.
+
+    Returns (error_result_or_None, target_nfs). Split out from the main
+    function so the async MCP wrapper can validate, then drive priming and
+    the sample_interval wait itself (asyncio.sleep instead of time.sleep) to
+    report progress between the two snapshots.
+    """
     if not (0.1 <= sample_interval <= 10.0):
-        return {"summary": "Error: sample_interval must be between 0.1 and 10.0 seconds.",
-                "detail": {"ok": False, "error": "sample_interval must be between 0.1 and 10.0 seconds"}}
+        return ({"summary": "Error: sample_interval must be between 0.1 and 10.0 seconds.",
+                 "detail": {"ok": False, "error": "sample_interval must be between 0.1 and 10.0 seconds"}},
+                [])
 
     target_nfs = nfs if nfs else list(_NFS)
     for n in target_nfs:
         if n not in _VALID_MONITOR_NFS:
             _e = f"Invalid NF '{n}'. Valid: {sorted(_VALID_MONITOR_NFS)}"
-            return {"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}
+            return ({"summary": f"Error: {_e}", "detail": {"ok": False, "error": _e}}, [])
 
-    # Resolve PIDs
+    return None, target_nfs
+
+
+class _PrimedSample(TypedDict):
+    pid_map: dict[str, int | None]
+    procs: dict[str, "psutil.Process"]
+    io_t0: dict[str, object]
+    sys_io_t0: object
+
+
+def _prime_snapshot(target_nfs: list[str]) -> _PrimedSample:
+    """Resolve PIDs and take the first (priming) snapshot."""
     pid_map: dict[str, int | None] = {nf: _get_nf_pid(nf) for nf in target_nfs}
 
-    # Build psutil.Process objects for running NFs
     procs: dict[str, psutil.Process] = {}
     for nf, pid in pid_map.items():
         if pid is not None:
@@ -100,7 +201,6 @@ def nf_resource_usage(
             except psutil.NoSuchProcess:
                 pid_map[nf] = None
 
-    # ── First snapshot ──────────────────────────────────────────────────────
     io_t0: dict[str, object] = {}
     for nf, proc in procs.items():
         try:
@@ -115,9 +215,18 @@ def nf_resource_usage(
     psutil.cpu_percent(interval=None)  # prime system CPU counter
     sys_io_t0 = psutil.disk_io_counters()
 
-    time.sleep(sample_interval)
+    return {"pid_map": pid_map, "procs": procs, "io_t0": io_t0, "sys_io_t0": sys_io_t0}
 
-    # ── Second snapshot ─────────────────────────────────────────────────────
+
+def _finish_snapshot(
+    target_nfs: list[str], primed: _PrimedSample, sample_interval: float
+) -> ResourceUsageResult:
+    """Take the second snapshot and compute the full result."""
+    pid_map = primed["pid_map"]
+    procs = primed["procs"]
+    io_t0 = primed["io_t0"]
+    sys_io_t0 = primed["sys_io_t0"]
+
     nf_data: dict[str, dict] = {}
     for nf in target_nfs:
         pid = pid_map[nf]

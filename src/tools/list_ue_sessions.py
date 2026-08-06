@@ -1,10 +1,59 @@
 """list_ue_sessions — query live UE registrations and PDU sessions from AMF and SMF."""
 
 from datetime import datetime, timezone
+from typing import Literal, NotRequired, TypedDict
 
 import httpx
 
 from tools._nf_util import metrics_url as _metrics_url
+from tools._schema_util import ErrorDetail
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class PduSession(TypedDict):
+    psi: int | None
+    dnn: str | None
+    snssai: dict | None
+    ipv4: str | None
+    ipv6: str | None
+    state: str
+    qos_flows: NotRequired[list[dict]]
+    n3: NotRequired[dict]
+    _source: NotRequired[Literal["smf_only"]]
+
+
+class UeEntry(TypedDict):
+    supi: str
+    imsi: str
+    cm_state: str
+    ue_activity: str
+    pdu_sessions: list[PduSession]
+    pdu_session_count: int
+    requested_slices: list[dict]
+    allowed_slices: list[dict]
+    location: dict | None
+    ambr_bps: dict | None
+    guti: NotRequired[str]
+    security_context: NotRequired[dict]
+
+
+class UeSources(TypedDict):
+    amf: str
+    smf: str
+
+
+class UeSessionsDetail(TypedDict):
+    ok: Literal[True]
+    timestamp: str
+    ue_count: int
+    ues: list[UeEntry]
+    sources: UeSources
+
+
+class UeSessionsResult(TypedDict):
+    summary: str
+    detail: UeSessionsDetail | ErrorDetail
 
 
 def _bare_imsi(supi: str) -> str:
@@ -107,7 +156,7 @@ def _merge_sessions(amf_ue: dict, smf_by_supi: dict) -> list[dict]:
 def list_ue_sessions(
     imsi_filter: str | None = None,
     include_idle: bool = True,
-) -> dict:
+) -> UeSessionsResult:
     """
     List all active UE registrations and their PDU sessions.
 

@@ -2,11 +2,38 @@
 
 import json
 import subprocess
+from typing import Literal, TypedDict
 
 import httpx
 import yaml
 
 from tools._nf_util import CONFIG_DIR as _CONFIG_DIR, metrics_url as _metrics_url
+from tools._schema_util import ErrorDetail
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class GnbEntry(TypedDict):
+    gnb_id: str | None
+    plmn: dict | None
+    sctp_peer: str | None
+    supported_ta_list: list[dict]
+    num_connected_ues: int
+
+
+class AmfRanDetail(TypedDict):
+    ok: Literal[True]
+    connected_gnbs: int
+    registered_ues: int
+    total_plmns: int
+    plmns: list[dict]
+    gnbs: list[GnbEntry]
+    gnbs_status: Literal["ok", "unreachable", "timeout", "error"]
+
+
+class AmfRanResult(TypedDict):
+    summary: str
+    detail: AmfRanDetail | ErrorDetail
 
 
 def _amf_sbi_url() -> str:
@@ -60,7 +87,7 @@ def _fetch_gnb_info(base_url: str) -> tuple[list, str]:
         return [], f"error: {exc}"
 
 
-def amf_ran_query() -> dict:
+def amf_ran_query() -> AmfRanResult:
     """
     Query live RAN state from the AMF OAM API and metrics endpoint.
 

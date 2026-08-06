@@ -2,9 +2,46 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Literal, NotRequired, TypedDict
 
 from tools._log_util import _parse_line
 from tools._nf_util import LOG_DIR as _LOG_DIR
+from tools._schema_util import ErrorDetail
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class LogLine(TypedDict):
+    nf: str
+    timestamp: str
+    component: str
+    level: str
+    message: str
+    source: str | None
+
+
+class LogQuery(TypedDict):
+    nf: list[str]
+    level: str
+    grep: str | None
+    lines: int
+    since: str | None
+
+
+class TailLogsDetail(TypedDict):
+    ok: Literal[True]
+    query: LogQuery
+    total_matched: int
+    lines: list[LogLine]
+    nf_counts: dict[str, int]
+    truncated: NotRequired[Literal[True]]
+    earliest_available: NotRequired[str]
+    errors: NotRequired[dict[str, str]]
+
+
+class TailLogsResult(TypedDict):
+    summary: str
+    detail: TailLogsDetail | ErrorDetail
 
 _ALL_NFS = ["nrf", "scp", "amf", "smf", "upf", "ausf", "udm", "udr", "pcf", "nssf", "bsf", "webui"]
 
@@ -123,7 +160,7 @@ def tail_nf_logs(
     grep: str | None = None,
     lines: int = 100,
     since: str | None = None,
-) -> dict:
+) -> TailLogsResult:
     """
     Filtered log reads across one or more Open5GS NF log files.
 

@@ -17,20 +17,47 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import mcp.server.sse as _mcp_sse
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from mcp.server.auth.middleware.auth_context import get_access_token as _get_access_token
 from sse_starlette.sse import EventSourceResponse as _ESR
 from tools.nf_lifecycle import nf_lifecycle as _nf_lifecycle
-from tools.system_health_snapshot import system_health_snapshot as _health
+from tools.system_health_snapshot import (
+    system_health_snapshot as _health,
+    HealthResult,
+)
 from tools.subscriber import subscriber as _subscriber
 from tools.subscriber_update_profile import subscriber_update_profile as _subscriber_update_profile
 from tools.subscriber_update_slices import subscriber_update_slices as _subscriber_update_slices
-from tools.list_ue_sessions import list_ue_sessions as _list_ue_sessions
-from tools.tail_nf_logs import tail_nf_logs as _tail_nf_logs
+from tools.list_ue_sessions import (
+    list_ue_sessions as _list_ue_sessions,
+    UeSessionsResult,
+)
+from tools.tail_nf_logs import (
+    tail_nf_logs as _tail_nf_logs,
+    TailLogsResult,
+)
 from tools.read_nf_config import read_nf_config as _read_nf_config
-from tools.ue_trace import get_ue_trace as _get_ue_trace
-from tools.amf_ran_query import amf_ran_query as _amf_ran_query
-from tools.nf_resource_usage import nf_resource_usage as _nf_resource_usage
+from tools.ue_trace import (
+    get_ue_trace as _get_ue_trace,
+    UeTraceResult,
+    _validate_trace_inputs,
+    _trace_anchor_amf,
+    _trace_search_one_nf,
+    _trace_search_upf,
+    _trace_finalize,
+)
+from tools.amf_ran_query import (
+    amf_ran_query as _amf_ran_query,
+    AmfRanResult,
+)
+from tools.nf_resource_usage import (
+    nf_resource_usage as _nf_resource_usage,
+    ResourceUsageResult,
+    _validate as _validate_usage,
+    _prime_snapshot as _prime_usage_snapshot,
+    _finish_snapshot as _finish_usage_snapshot,
+)
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -213,7 +240,7 @@ async def system_health_snapshot(
         Field(ge=1, le=1440,
               description="How many minutes back to scan logs for errors."),
     ] = 15,
-) -> dict:
+) -> HealthResult:
     """One-shot health check of the Open5GS 5G core.
 
     Polls all NF processes, scans recent logs for errors, checks MongoDB
@@ -475,7 +502,7 @@ async def list_ue_sessions(
         Field(description="Set false to return only UEs with at least one "
                           "active PDU session."),
     ] = True,
-) -> dict:
+) -> UeSessionsResult:
     """List all live UE registrations and their PDU sessions.
 
     Use this to check how many UEs are currently registered and what data sessions
@@ -521,7 +548,7 @@ async def tail_nf_logs(
                           'datetime ("2026-06-03T20:00:00"). Omit to read from '
                           "the current tail without a time constraint."),
     ] = None,
-) -> dict:
+) -> TailLogsResult:
     """Filtered log reads across one or more Open5GS NF log files.
 
     Reads the last ~2 MB of each requested log file, filters by level/keyword/
@@ -608,7 +635,9 @@ async def get_ue_trace(
         Field(description="Also search the NRF log and include NF-lifecycle "
                           'events (direction="internal").'),
     ] = False,
-) -> dict:
+    *,
+    ctx: Context,
+) -> UeTraceResult:
     """Collect full e2e trace for a UE identified by IMSI/SUPI across all Open5GS NFs.
 
     Use this when a UE fails to register, authenticate, or establish a PDU session
@@ -624,10 +653,54 @@ async def get_ue_trace(
     message_type/from/to/message), mermaid_hint (sequenceDiagram participant
     block), and nf_errors if any NF log was unreadable.
     """
-    return await asyncio.to_thread(
-        _get_ue_trace, supi, time_window_minutes, include_nfs,
+    err, full_supi, bare_imsi, nfs_to_search = await asyncio.to_thread(
+        _validate_trace_inputs, supi, time_window_minutes, include_nfs,
         window_padding_seconds, include_nrf,
     )
+    if err:
+        return err
+
+    total_steps = len(nfs_to_search) + 1
+    await ctx.report_progress(0, total_steps, "Anchoring on AMF log...")
+    amf_result, nf_errors, search_start, search_end = await asyncio.to_thread(
+        _trace_anchor_amf, bare_imsi, time_window_minutes, nfs_to_search, window_padding_seconds,
+    )
+
+    nf_data: dict = {}
+    if "amf" in nfs_to_search:
+        nf_data["amf"] = amf_result
+
+    smf_seids: list[str] = []
+    step = 1
+    for nf in (n for n in nfs_to_search if n not in ("amf", "upf")):
+        await ctx.report_progress(step, total_steps, f"Searching {nf} log...")
+        data, err_msg = await asyncio.to_thread(
+            _trace_search_one_nf, nf, search_start, search_end, bare_imsi,
+        )
+        nf_data[nf] = data
+        if err_msg:
+            nf_errors[nf] = err_msg
+            await ctx.warning(f"{nf}: {err_msg}")
+        if nf == "smf":
+            smf_seids = data.get("seids", [])
+        step += 1
+
+    if "upf" in nfs_to_search:
+        await ctx.report_progress(step, total_steps, "Searching upf log...")
+        upf_data, err_msg = await asyncio.to_thread(
+            _trace_search_upf, search_start, search_end, smf_seids,
+        )
+        nf_data["upf"] = upf_data
+        if err_msg:
+            nf_errors["upf"] = err_msg
+            await ctx.warning(f"upf: {err_msg}")
+        step += 1
+
+    result = await asyncio.to_thread(
+        _trace_finalize, full_supi, nf_data, nf_errors, search_start, search_end,
+    )
+    await ctx.report_progress(total_steps, total_steps, "Done")
+    return result
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -643,7 +716,9 @@ async def nf_resource_usage(
               description="Sampling window in seconds. Larger values give "
                           "more accurate CPU averages."),
     ] = 1.0,
-) -> dict:
+    *,
+    ctx: Context,
+) -> ResourceUsageResult:
     """CPU, memory, and I/O utilisation for each running Open5GS NF vs system totals.
 
     Takes two snapshots separated by sample_interval to compute per-process CPU %
@@ -660,11 +735,23 @@ async def nf_resource_usage(
                    memory_total/available/used_mb, memory_percent_used, disk_io
       open5gs_share — cpu_pct_of_system_usage, memory_pct_of_total
     """
-    return await asyncio.to_thread(_nf_resource_usage, nfs, sample_interval)
+    err, target_nfs = await asyncio.to_thread(_validate_usage, nfs, sample_interval)
+    if err:
+        return err
+
+    await ctx.report_progress(0, 2, "Taking first snapshot...")
+    primed = await asyncio.to_thread(_prime_usage_snapshot, target_nfs)
+
+    await ctx.report_progress(1, 2, f"Waiting {sample_interval}s before second snapshot...")
+    await asyncio.sleep(sample_interval)
+
+    result = await asyncio.to_thread(_finish_usage_snapshot, target_nfs, primed, sample_interval)
+    await ctx.report_progress(2, 2, "Done")
+    return result
 
 
 @mcp.tool(annotations=_READ_ONLY)
-async def amf_ran_query() -> dict:
+async def amf_ran_query() -> AmfRanResult:
     """Query live RAN state from the AMF OAM API and metrics endpoint.
 
     Calls /namf-oam/v1/plmns for aggregate counts and PLMN/slice config, then

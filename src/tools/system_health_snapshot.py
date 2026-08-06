@@ -3,11 +3,67 @@
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal, NotRequired, TypedDict
 
 import httpx
 
 from tools._nf_util import get_nf_pid as _get_nf_pid, metrics_url as _metrics_url
+from tools._schema_util import ErrorDetail
 from tools.tail_nf_logs import _read_nf_log, _LEVELS as _LOG_LEVELS
+
+
+# ── structured output schema ─────────────────────────────────────────────────
+
+class NfHealthEntry(TypedDict):
+    status: Literal["green", "yellow", "red"]
+    pid: int | None
+    recent_errors: list[str]
+    endpoint: NotRequired[Literal["ok", "unreachable", "error"]]
+
+
+class MongoStatus(TypedDict):
+    status: Literal["ok", "down"]
+    subscribers: NotRequired[int]
+    error: NotRequired[str]
+
+
+class TunStatus(TypedDict):
+    status: Literal["ok", "down", "missing", "unknown"]
+    device: str
+    detail: NotRequired[str]
+    error: NotRequired[str]
+
+
+class RanStatus(TypedDict):
+    status: Literal["ok", "no_gnbs", "unreachable", "timeout", "error"]
+    gnbs_connected: int
+    error: NotRequired[str]
+
+
+class HealthSummary(TypedDict):
+    overall: Literal["healthy", "degraded", "critical"]
+    nfs_green: int
+    nfs_yellow: int
+    nfs_red: int
+    nfs_total: int
+    mongodb: str
+    tun: str
+    ran: str
+
+
+class HealthDetail(TypedDict):
+    ok: Literal[True]
+    timestamp: str
+    nfs: dict[str, NfHealthEntry]
+    mongodb: MongoStatus
+    tun: TunStatus
+    ran: RanStatus
+    summary: HealthSummary
+
+
+class HealthResult(TypedDict):
+    summary: str
+    detail: HealthDetail | ErrorDetail
 
 # NFs that expose subscriber-relevant HTTP info endpoints
 _NF_INFO_ENDPOINTS: dict[str, str] = {
@@ -88,7 +144,7 @@ def _probe_nf_endpoint(nf: str) -> str:
 
 # ── main ───────────────────────────────────────────────────────────────────────
 
-def system_health_snapshot(log_minutes: int = 15) -> dict:
+def system_health_snapshot(log_minutes: int = 15) -> HealthResult:
     """
     One-shot health check of the Open5GS 5G core.
 
