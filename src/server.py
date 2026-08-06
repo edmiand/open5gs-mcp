@@ -16,7 +16,7 @@ from starlette.applications import Starlette
 sys.path.insert(0, str(Path(__file__).parent))
 
 import mcp.server.sse as _mcp_sse
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from mcp.server.auth.middleware.auth_context import get_access_token as _get_access_token
 from sse_starlette.sse import EventSourceResponse as _ESR
@@ -115,11 +115,6 @@ if _sec["auth_enabled"]:
 
 # ── FastMCP instance ───────────────────────────────────────────────────────────
 
-# Apply localhost_only here so the setting takes effect regardless of whether
-# the server is run directly or imported as a module.
-_effective_host = "127.0.0.1" if _sec["localhost_only"] else _srv["host"]
-
-
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Open5GS MCP server")
     p.add_argument(
@@ -147,7 +142,7 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-mcp = FastMCP(
+mcp = MCPServer(
     name="open5gs-mcp",
     instructions=(
         "Manage and observe an Open5GS 5G core: NF lifecycle and health "
@@ -164,8 +159,6 @@ mcp = FastMCP(
     ),
     token_verifier=_token_verifier,
     auth=_auth_settings,
-    host=_effective_host,
-    port=_srv["port"],
 )
 
 
@@ -693,11 +686,10 @@ if __name__ == "__main__":
     args = _parse_args()
 
     # Layer 1: localhost_only in config overrides --host
-    if _sec["localhost_only"]:
-        mcp.host = "127.0.0.1"
-    else:
-        mcp.host = args.host
-    mcp.port = args.port
+    # (mcp 2.0.0's MCPServer no longer carries host/port as instance state —
+    # thread the resolved host through to each run call explicitly instead.)
+    _run_host = "127.0.0.1" if _sec["localhost_only"] else args.host
+    _run_port = args.port
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")
@@ -705,8 +697,8 @@ if __name__ == "__main__":
         # Serve SSE (/sse, /messages) and streamable-http (/mcp) on one port
         # so ollmcp and mcp-tools both work without switching transports.
         # Each sub-app has its own lifespan; preserve both via a dispatcher.
-        _sse_app  = mcp.sse_app()
-        _http_app = mcp.streamable_http_app()
+        _sse_app  = mcp.sse_app(host=_run_host)
+        _http_app = mcp.streamable_http_app(host=_run_host)
 
         from contextlib import asynccontextmanager
         from starlette.routing import Route, Router
@@ -735,7 +727,7 @@ if __name__ == "__main__":
 
         _combined_lifespan_app = Starlette(lifespan=_combined_lifespan)
 
-        uvicorn.run(_dispatch, host=mcp.host, port=mcp.port,
+        uvicorn.run(_dispatch, host=_run_host, port=_run_port,
                     log_level=mcp.settings.log_level.lower())
     else:
-        mcp.run(transport=args.transport)
+        mcp.run(transport=args.transport, host=_run_host, port=_run_port)
