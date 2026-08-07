@@ -79,6 +79,10 @@ from tools.nf_resource_usage import (
     _prime_snapshot as _prime_usage_snapshot,
     _finish_snapshot as _finish_usage_snapshot,
 )
+from tools.open5gs_version import (
+    open5gs_version as _open5gs_version,
+    VersionResult,
+)
 
 # FastMCP's SSE transport doesn't set a ping interval, so idle connections are
 # dropped by NATs/firewalls after ~60 s. Patch the EventSourceResponse reference
@@ -198,7 +202,7 @@ mcp = MCPServer(
         "provisioning in MongoDB (subscriber, subscriber_update_profile, "
         "subscriber_update_slices), live UE/RAN state (list_ue_sessions, "
         "amf_ran_query), and diagnostics (tail_nf_logs, read_nf_config, "
-        "get_ue_trace).\n\n"
+        "get_ue_trace, open5gs_version).\n\n"
         "Every tool returns the same envelope: "
         '{"summary": <one-sentence string>, "detail": {"ok": <bool>, ...}}. '
         'On failure, summary starts with "Error: " and detail is '
@@ -676,6 +680,28 @@ async def read_nf_config(
     config (the parsed subtree — full tree when path omitted).
     """
     return await asyncio.to_thread(_read_nf_config, nf, path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def open5gs_version() -> VersionResult:
+    """Report the installed Open5GS version.
+
+    Runs `-v` on a compiled open5gs-*d binary (any one — they all embed the
+    same version string) and parses the result. `-v` just prints the version
+    and exits per src/main.c; it doesn't start the daemon or touch any
+    running NF, so this is safe to call regardless of core state.
+
+    The version is baked in at build time by src/meson.build: either
+    `git describe --abbrev=7 --dirty=+` against the source tree it was built
+    from, or plain 'v' + project_version if that tree had no .git.
+
+    detail contains: ok, raw (full `-v` output), version (base semver, e.g.
+    "2.8.0"), tag (e.g. "v2.8.0" -- for comparing against GitHub release
+    tags), commits_since_tag (None if built exactly at a tag), commit_hash
+    (short git hash, omitted if unavailable), dirty (uncommitted changes at
+    build time), and checked_binary.
+    """
+    return await asyncio.to_thread(_open5gs_version)
 
 
 @mcp.resource(

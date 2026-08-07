@@ -16,6 +16,7 @@ Complete documentation of all Open5GS MCP server tools.
 5. [Configuration & Logs](#configuration--logs)
 6. [RAN & Network State](#ran--network-state)
 7. [Resource Monitoring](#resource-monitoring)
+8. [Version](#version)
 
 ---
 
@@ -941,6 +942,43 @@ for nf, stats in by_cpu[:3]:
 - Spot I/O performance issues
 - Compare NF resource efficiency
 - Capacity planning
+
+---
+
+## Version
+
+### `open5gs_version`
+
+Report the installed Open5GS version, read from a compiled `open5gs-*d` binary's
+`-v` output (any binary works — they all embed the same version string; `amf` is
+tried first). Doesn't start the daemon or touch any running NF.
+
+**Parameters:** none
+
+**Returns:**
+```python
+{
+    "ok": True,
+    "raw": "Open5GS v2.8.0-68-gb811f1d",
+    "version": "2.8.0",
+    "tag": "v2.8.0",              # for comparing against GitHub release tags
+    "commits_since_tag": 68,      # None if built exactly at a tag
+    "commit_hash": "b811f1d",     # omitted if unavailable
+    "dirty": False,               # source tree had uncommitted changes at build time
+    "checked_binary": "open5gs-amfd",
+}
+```
+
+**Examples:**
+
+```python
+open5gs_version()
+```
+
+**Use cases:**
+- Check the running core's version before comparing against upstream releases
+- Confirm an upgrade actually landed (compare `commit_hash` before/after)
+- Detect a dirty/dev build (`dirty: True`) vs. a clean tagged release
 
 ---
 
