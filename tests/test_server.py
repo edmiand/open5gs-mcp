@@ -6,10 +6,34 @@ import sys
 from pathlib import Path
 
 import anyio
+import pytest
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 SERVER = [sys.executable, str(Path(__file__).parent.parent / "src" / "server.py")]
+
+_EXPECTED_TOOLS = {
+    "nf_lifecycle", "system_health_snapshot", "subscriber",
+    "subscriber_update_profile", "subscriber_update_slices",
+    "list_ue_sessions", "read_nf_config", "tail_nf_logs",
+    "get_ue_trace", "amf_ran_query", "nf_resource_usage",
+    "open5gs_version",
+}
+
+
+@pytest.mark.unit
+def test_server_module_registers_all_tools():
+    """Importing server.py must not raise.
+
+    All @mcp.tool() decorators run at import time, which is where they build
+    each tool's pydantic output schema from its TypedDict return annotation —
+    a stdlib typing.TypedDict/NotRequired (valid on 3.12+ but not on the 3.10
+    venv this deploys to) blows up here, not in any tool's own unit tests.
+    """
+    import server
+
+    names = set(server.mcp._tool_manager._tools.keys())
+    assert names == _EXPECTED_TOOLS
 
 
 async def run():
