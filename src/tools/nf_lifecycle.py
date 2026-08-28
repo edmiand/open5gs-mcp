@@ -9,10 +9,10 @@ Vanilla Open5GS manages NFs via systemd (systemctl start open5gs-amfd, etc.).
 import re
 import subprocess
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
 
 from pydantic import Field as _PField
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 
 from tools._schema_util import ErrorDetail
 

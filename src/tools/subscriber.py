@@ -1,6 +1,7 @@
 """Subscriber lifecycle — read, list, create, delete."""
 
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
+from typing_extensions import TypedDict
 
 from pydantic import Field as _PField
 from pymongo import ASCENDING

@@ -1,6 +1,7 @@
 """Update subscriber profile parameters in Open5GS MongoDB."""
 
-from typing import Literal, TypedDict
+from typing import Literal
+from typing_extensions import TypedDict
 
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 

@@ -1,7 +1,8 @@
 """Update subscriber slice and session configuration in Open5GS MongoDB."""
 
 import copy
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
+from typing_extensions import TypedDict
 
 from pydantic import Field as _PField
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError

@@ -2,7 +2,8 @@
 
 import json
 import subprocess
-from typing import Literal, TypedDict
+from typing import Literal
+from typing_extensions import TypedDict
 
 import httpx
 import yaml

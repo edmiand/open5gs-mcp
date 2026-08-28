@@ -1,10 +1,10 @@
 """list_ue_sessions — query live UE registrations and PDU sessions from AMF and SMF."""
 
 from datetime import datetime, timezone
-from typing import Literal, TypedDict
+from typing import Literal
 
 import httpx
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 
 from tools._nf_util import metrics_url as _metrics_url
 from tools._schema_util import ErrorDetail

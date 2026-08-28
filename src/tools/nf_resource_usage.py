@@ -2,10 +2,10 @@
 
 import time
 from datetime import datetime, timezone
-from typing import Literal, TypedDict
+from typing import Literal
 
 import psutil
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 
 from tools._nf_util import get_nf_pid as _get_nf_pid
 from tools._schema_util import ErrorDetail

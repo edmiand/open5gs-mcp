@@ -5,7 +5,8 @@ ErrorDetail is the common shape used by every early input-validation failure
 across all tools — kept here once instead of redefined per tool.
 """
 
-from typing import Literal, TypedDict
+from typing import Literal
+from typing_extensions import TypedDict
 
 
 class ErrorDetail(TypedDict):

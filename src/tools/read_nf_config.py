@@ -1,7 +1,8 @@
 """read_nf_config — read and return the YAML configuration for any Open5GS NF."""
 
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
+from typing_extensions import TypedDict
 
 import yaml
 
