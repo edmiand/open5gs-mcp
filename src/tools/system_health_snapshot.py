@@ -3,9 +3,10 @@
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
 
 import httpx
+from typing_extensions import NotRequired
 
 from tools._nf_util import get_nf_pid as _get_nf_pid, metrics_url as _metrics_url
 from tools._schema_util import ErrorDetail

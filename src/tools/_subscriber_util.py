@@ -2,7 +2,9 @@
 
 import copy
 import re
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
+
+from typing_extensions import NotRequired
 
 import bson
 from pymongo import MongoClient

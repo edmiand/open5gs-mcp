@@ -2,7 +2,9 @@
 
 import re
 import subprocess
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
+
+from typing_extensions import NotRequired
 
 from tools._nf_util import _OPEN5GS
 from tools._schema_util import ErrorDetail

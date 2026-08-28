@@ -2,7 +2,9 @@
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
+
+from typing_extensions import NotRequired
 
 from tools._log_util import _ANSI_RE, _parse_line
 from tools._nf_util import LOG_DIR as _LOG_DIR
