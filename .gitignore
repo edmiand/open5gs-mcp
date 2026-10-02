@@ -7,3 +7,4 @@ node_modules/
 dist/
 scripts/.state/
 scripts/logs/
+.mcp-server.state
