@@ -44,6 +44,7 @@ tests/
   test_subscriber_update_profile.py  # subscriber_update_profile tool
   test_subscriber_update_slices.py   # subscriber_update_slices tool
   test_list_ue_sessions.py           # list_ue_sessions tool
+  test_send_ue_notification.py       # send_ue_notification tool
   test_amf_ran_query.py              # amf_ran_query tool
   test_nf_lifecycle.py               # nf_lifecycle tool
   test_read_nf_config.py             # read_nf_config tool
@@ -74,6 +75,7 @@ Each tool test patches only at the I/O boundary, not inside business logic:
 | `system_health_snapshot` | `_get_nf_pid`, `_read_nf_log`, `_check_mongodb`, `_check_tun`, `_check_ran`, `_probe_nf_endpoint` |
 | `subscriber` / `subscriber_update_*` | `get_subscribers_col` from `_subscriber_util` |
 | `list_ue_sessions` | `httpx.get` (AMF + SMF OAM responses) |
+| `send_ue_notification` | `tools.list_ue_sessions.httpx.get` (SMF OAM response for IP lookup), `tools.send_ue_notification.httpx.post` (notification delivery) |
 | `amf_ran_query` | `subprocess.run` (curl for SBI), `httpx.get` (for `/gnb-info`) |
 | `nf_lifecycle` | `subprocess.run`, `_SCRIPT` patched to a real temp file |
 | `read_nf_config` | `_CONFIG_DIR` redirected to `tmp_path` (real YAML files) |

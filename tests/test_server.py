@@ -15,7 +15,7 @@ SERVER = [sys.executable, str(Path(__file__).parent.parent / "src" / "server.py"
 _EXPECTED_TOOLS = {
     "nf_lifecycle", "system_health_snapshot", "subscriber",
     "subscriber_update_profile", "subscriber_update_slices",
-    "list_ue_sessions", "read_nf_config", "tail_nf_logs",
+    "list_ue_sessions", "send_ue_notification", "read_nf_config", "tail_nf_logs",
     "get_ue_trace", "amf_ran_query", "nf_resource_usage",
     "open5gs_version",
 }

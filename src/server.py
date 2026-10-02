@@ -45,6 +45,10 @@ from tools.list_ue_sessions import (
     list_ue_sessions as _list_ue_sessions,
     UeSessionsResult,
 )
+from tools.send_ue_notification import (
+    send_ue_notification as _send_ue_notification,
+    NotificationResult,
+)
 from tools.tail_nf_logs import (
     tail_nf_logs as _tail_nf_logs,
     TailLogsResult,
@@ -201,8 +205,9 @@ mcp = MCPServer(
         "(nf_lifecycle, system_health_snapshot, nf_resource_usage), subscriber "
         "provisioning in MongoDB (subscriber, subscriber_update_profile, "
         "subscriber_update_slices), live UE/RAN state (list_ue_sessions, "
-        "amf_ran_query), and diagnostics (tail_nf_logs, read_nf_config, "
-        "get_ue_trace, open5gs_version).\n\n"
+        "amf_ran_query), UE notifications (send_ue_notification), and "
+        "diagnostics (tail_nf_logs, read_nf_config, get_ue_trace, "
+        "open5gs_version).\n\n"
         "Every tool returns the same envelope: "
         '{"summary": <one-sentence string>, "detail": {"ok": <bool>, ...}}. '
         'On failure, summary starts with "Error: " and detail is '
@@ -227,6 +232,8 @@ _TRACE_NF = Literal["amf", "ausf", "udm", "udr", "smf", "pcf", "upf", "nrf"]
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 _MUTATING = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+_NOTIFY = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                          idempotentHint=False, openWorldHint=True)
 
 
 @mcp.tool(annotations=_MUTATING)
@@ -567,6 +574,55 @@ async def list_ue_sessions(
     (sources.amf / sources.smf).
     """
     return await asyncio.to_thread(_list_ue_sessions, imsi_filter, include_idle)
+
+
+@mcp.tool(annotations=_NOTIFY)
+async def send_ue_notification(
+    imsi: Annotated[
+        str,
+        Field(description='IMSI digits (10-15) or SUPI ("imsi-<digits>").'),
+    ],
+    message: Annotated[
+        str,
+        Field(min_length=1, max_length=500,
+              description="Notification text, max 500 characters."),
+    ],
+    incident_id: Annotated[
+        str | None,
+        Field(description="Optional identifier included in the notification "
+                          "body, for correlating deliveries with an incident."),
+    ] = None,
+    port: Annotated[
+        int,
+        Field(ge=1, le=65535,
+              description="TCP port the UE-side listener is on."),
+    ] = 9000,
+) -> NotificationResult:
+    """Deliver a short text notification to a UE over its active 5G data session.
+
+    Resolves the IMSI to the UE's current PDU session IPv4 address via the SMF
+    (queried fresh on every call — never cached, since the address can change
+    between sessions), then sends an HTTP POST from this VM directly (no proxy)
+    to http://<ue_ip>:<port>/notify with JSON body {"message", "incident_id"}.
+    The request routes over the UPF's ogstun interface like any other
+    core-to-UE traffic. Timeout is 5 seconds.
+
+    Use this to push an out-of-band alert to a specific subscriber's device —
+    the UE must already have an active PDU session, and a listener must be
+    running on the UE at the given port.
+
+    detail contains on success: ok, imsi, ue_ip, port, http_status,
+    round_trip_ms, incident_id (when supplied). On failure: ok=false, error,
+    and reason — one of "invalid_input", "no_session" (no active PDU session
+    with an assigned IPv4 for that IMSI), "connection_refused" (no listener
+    on the UE), "timeout", or "request_error".
+    """
+    if _scope_enforce:
+        if err := _require_write_scope("send_ue_notification"):
+            return err
+    return await asyncio.to_thread(
+        _send_ue_notification, imsi, message, incident_id, port,
+    )
 
 
 @mcp.tool(annotations=_READ_ONLY)

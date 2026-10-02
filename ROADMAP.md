@@ -5,13 +5,14 @@ see `FEATURES.md` for the fuller backlog of candidate tools discovered by NF
 API/source analysis (that list predates several of the "built" tools below and
 hasn't been reconciled against them yet).
 
-## Built (12)
+## Built (13)
 - `nf_lifecycle`              — start/stop/restart/status any NF
 - `system_health_snapshot`    — full health check in one call
 - `subscriber`                — read/list/create/delete subscribers (action-dispatched)
 - `subscriber_update_profile` — update profile params (security, AMBR, status, restrictions)
 - `subscriber_update_slices`  — update slice/session (DNN) configuration
 - `list_ue_sessions`          — active UE contexts and PDU sessions (AMF+SMF join)
+- `send_ue_notification`      — push a short text notification to a UE over its PDU session
 - `read_nf_config`            — read any NF YAML config
 - `tail_nf_logs`              — filtered log reads across NFs
 - `get_ue_trace`              — e2e UE call flow reconstruction across all NFs

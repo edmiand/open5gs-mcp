@@ -13,6 +13,8 @@ Complete documentation of all Open5GS MCP server tools.
    - [subscriber_update_profile](#subscriber_update_profile)
    - [subscriber_update_slices](#subscriber_update_slices)
 4. [UE Session Management](#ue-session-management)
+   - [list_ue_sessions](#list_ue_sessions)
+   - [send_ue_notification](#send_ue_notification)
 5. [Configuration & Logs](#configuration--logs)
 6. [RAN & Network State](#ran--network-state)
 7. [Resource Monitoring](#resource-monitoring)
@@ -594,6 +596,69 @@ for ue in all_ues["ues"]:
 - Verify QoS flow setup
 - Troubleshoot connectivity issues
 - Monitor network load
+
+---
+
+### `send_ue_notification`
+
+Deliver a short text notification to a UE over its active 5G data session.
+
+Resolves the IMSI to the UE's current PDU session IPv4 address via the SMF
+(queried fresh on every call — never cached, since the assigned address can
+change between sessions), then sends an HTTP POST directly from this VM (no
+proxy) to `http://<ue_ip>:<port>/notify` with a JSON body. The request routes
+over the UPF's `ogstun` interface like any other core-to-UE traffic. A
+listener must already be running on the UE at the given port; timeout is 5
+seconds.
+
+**Parameters:**
+- `imsi` (string, required): IMSI digits (10-15) or SUPI ("imsi-<digits>")
+- `message` (string, required): Notification text, max 500 characters
+- `incident_id` (string, optional): Caller-supplied identifier included in the notification body, for correlating deliveries with an incident
+- `port` (int, optional): TCP port the UE-side listener is on (default 9000)
+
+**Returns (success):**
+```python
+{
+    "ok": True,
+    "imsi": "999700000000001",
+    "ue_ip": "10.45.0.2",
+    "port": 9000,
+    "http_status": 200,
+    "round_trip_ms": 4.2,
+    "incident_id": "INC-42"  # only present when supplied
+}
+```
+
+**Returns (failure):**
+```python
+{
+    "ok": False,
+    "error": "No active PDU session with an assigned IPv4 address for imsi-999700000000001",
+    "reason": "no_session"
+    # reason is one of: "invalid_input", "no_session",
+    # "connection_refused" (no listener on the UE), "timeout", "request_error"
+}
+```
+
+**Examples:**
+
+```python
+# Push a plain alert
+send_ue_notification(imsi="999700000000001", message="Scheduled maintenance at 02:00 UTC")
+
+# Tag the notification with an incident for correlation, non-default listener port
+send_ue_notification(
+    imsi="999700000000001",
+    message="Your session will be reset shortly",
+    incident_id="INC-1042",
+    port=9100,
+)
+```
+
+**Use cases:**
+- Push an out-of-band alert to a specific subscriber's device during an incident
+- Verify end-to-end data-plane reachability to a UE (beyond just an assigned IP)
 
 ---
 
