@@ -595,7 +595,9 @@ async def send_ue_notification(
     port: Annotated[
         int,
         Field(ge=1, le=65535,
-              description="TCP port the UE-side listener is on."),
+              description="TCP port the UE-side listener is on. Optional — "
+                          "omit it to use the standard listener port 9000; "
+                          "only set it if the user names a different port."),
     ] = 9000,
 ) -> NotificationResult:
     """Deliver a short text notification to a UE over its active 5G data session.
@@ -608,8 +610,10 @@ async def send_ue_notification(
     core-to-UE traffic. Timeout is 5 seconds.
 
     Use this to push an out-of-band alert to a specific subscriber's device —
-    the UE must already have an active PDU session, and a listener must be
-    running on the UE at the given port.
+    the UE must already have an active PDU session and be running the
+    notification listener (port 9000 by default). Only imsi and message are
+    needed; do not ask the user for a port unless delivery fails with
+    "connection_refused".
 
     detail contains on success: ok, imsi, ue_ip, port, http_status,
     round_trip_ms, incident_id (when supplied). On failure: ok=false, error,
