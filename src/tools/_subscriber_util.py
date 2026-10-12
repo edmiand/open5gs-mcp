@@ -111,6 +111,13 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 # Default subscriber document (matches Mongoose schema defaults)
+# Fallback SIM credentials used by subscriber create when the caller omits them.
+# These are the well-known Open5GS / UERANSIM sample values — fine for a lab,
+# never for real SIMs (anyone can derive auth vectors from them).
+DEFAULT_K   = "465B5CE8B199B49FAA5F0A2EE238A6BC"
+DEFAULT_OPC = "E8ED289DEBA952E4283B54E88E6183CA"
+
+
 DEFAULT_SUBSCRIBER: dict[str, Any] = {
 	"schema_version": 1,
 	"msisdn": [],

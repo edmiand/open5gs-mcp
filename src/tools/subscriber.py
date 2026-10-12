@@ -1,7 +1,7 @@
 """Subscriber lifecycle — read, list, create, delete."""
 
 from typing import Annotated, Literal
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from pydantic import Field as _PField
 from pymongo import ASCENDING
@@ -10,7 +10,7 @@ from pymongo.errors import ConnectionFailure, DuplicateKeyError, ServerSelection
 from ._schema_util import ErrorDetail
 from ._subscriber_util import (
     normalize_imsi, get_subscribers_col, serialize, redact, deep_merge,
-    DEFAULT_SUBSCRIBER, SubscriberDoc,
+    DEFAULT_SUBSCRIBER, DEFAULT_K, DEFAULT_OPC, SubscriberDoc,
 )
 
 
@@ -19,6 +19,8 @@ from ._subscriber_util import (
 class SubscriberReadCreateDetail(TypedDict):
     ok: Literal[True]
     subscriber: SubscriberDoc
+    # create only: security fields filled with lab defaults because the caller omitted them
+    defaulted_keys: NotRequired[list[str]]
 
 
 class SubscriberListDetail(TypedDict):
@@ -67,6 +69,11 @@ def _wrap_subscriber(action: str, result: dict) -> dict:
         summary = f"Listed {result['returned']} of {result['count']} subscriber(s)."
     elif action == "create":
         summary = f"Subscriber {result['subscriber']['imsi']} created."
+        if result.get("defaulted_keys"):
+            summary += (
+                f" WARNING: {'/'.join(result['defaulted_keys'])} not provided — "
+                "used default lab test values; tell the admin."
+            )
     else:  # delete
         summary = (
             f"Subscriber {result['imsi']} deleted." if result.get("deleted")
@@ -101,6 +108,12 @@ def subscriber(
                 IMSI digits (10-15) or SUPI ("imsi-<digits>").
 
         data:   For create only. Subscriber fields deep-merged with defaults.
+                security.k / security.opc are optional: if omitted (or empty),
+                the standard Open5GS/UERANSIM lab test values are used and the
+                response lists them in "defaulted_keys" — report this to the
+                admin. If security.op is given instead of opc, no OPc default
+                is applied. Ask the admin for the SIM's real Ki/OPc whenever
+                provisioning a physical SIM.
                 Example:
                   {
                     "security": {"k": "<Ki>", "opc": "<OPc>", "sqn": 0},
@@ -133,7 +146,8 @@ def subscriber(
         read:   {"ok": True, "subscriber": {...}} — secrets redacted
         list:   {"ok": True, "subscribers": [...], "count": int, "returned": int}
                   count = total matching documents in DB; returned = documents in this page (≤ limit)
-        create: {"ok": True, "subscriber": {...}} — secrets redacted
+        create: {"ok": True, "subscriber": {...}, "defaulted_keys"?: ["k", "opc"]}
+                — secrets redacted; defaulted_keys present only if defaults were used
         delete (confirm=False): {"ok": False, "confirm_required": True,
                   "subscriber": {...}, "error": str} — nothing deleted yet
         delete (confirm=True):  {"ok": True, "deleted": bool, "imsi": str}
@@ -192,6 +206,21 @@ def _list(limit: int, filter: dict | None) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _apply_default_keys(sec: dict) -> list[str]:
+    """Fill missing/empty k and opc with lab defaults; return the names filled.
+
+    OPc is left alone when the caller supplied OP — Open5GS derives OPc from it.
+    """
+    defaulted = []
+    if not sec.get("k"):
+        sec["k"] = DEFAULT_K
+        defaulted.append("k")
+    if not sec.get("opc") and not sec.get("op"):
+        sec["opc"] = DEFAULT_OPC
+        defaulted.append("opc")
+    return defaulted
+
+
 def _create(imsi: str | None, data: dict | None) -> dict:
     if not imsi:
         return {"ok": False, "error": "imsi is required for action='create'"}
@@ -204,8 +233,12 @@ def _create(imsi: str | None, data: dict | None) -> dict:
             return {"ok": False, "error": f"Subscriber {norm} already exists. Use subscriber_update_profile to modify it."}
         doc = deep_merge(DEFAULT_SUBSCRIBER, data or {})
         doc["imsi"] = norm
+        defaulted = _apply_default_keys(doc["security"])
         col.insert_one(doc)
-        return {"ok": True, "subscriber": redact(serialize(doc))}
+        result = {"ok": True, "subscriber": redact(serialize(doc))}
+        if defaulted:
+            result["defaulted_keys"] = defaulted
+        return result
     except DuplicateKeyError:
         return {"ok": False, "error": f"Subscriber {norm} already exists"}
     except (ConnectionFailure, ServerSelectionTimeoutError) as exc:

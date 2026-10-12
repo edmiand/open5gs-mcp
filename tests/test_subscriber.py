@@ -6,6 +6,7 @@ import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 
 from tools.subscriber import subscriber
+from tools._subscriber_util import DEFAULT_K, DEFAULT_OPC
 from conftest import make_subscriber, make_mock_col, unwrap
 
 
@@ -163,6 +164,53 @@ class TestCreate:
         assert r["ok"] is True
         # Default slice should be present
         assert "slice" in r["subscriber"]
+
+    @patch("tools.subscriber.get_subscribers_col")
+    def test_default_keys_when_omitted(self, mock_get_col):
+        col = make_mock_col(docs=[])
+        mock_get_col.return_value = col
+        w = subscriber(action="create", imsi=IMSI)
+        r = unwrap(w)
+        assert r["defaulted_keys"] == ["k", "opc"]
+        assert "WARNING" in w["summary"]
+        sec = col.insert_one.call_args[0][0]["security"]
+        assert sec["k"] == DEFAULT_K
+        assert sec["opc"] == DEFAULT_OPC
+        assert r["subscriber"]["security"]["k"] == "***"
+
+    @patch("tools.subscriber.get_subscribers_col")
+    def test_no_defaults_when_keys_provided(self, mock_get_col):
+        col = make_mock_col(docs=[])
+        mock_get_col.return_value = col
+        w = subscriber(action="create", imsi=IMSI, data={
+            "security": {"k": "abc123", "opc": "def456"},
+        })
+        r = unwrap(w)
+        assert "defaulted_keys" not in r
+        assert "WARNING" not in w["summary"]
+        sec = col.insert_one.call_args[0][0]["security"]
+        assert (sec["k"], sec["opc"]) == ("abc123", "def456")
+
+    @patch("tools.subscriber.get_subscribers_col")
+    def test_only_missing_key_defaulted(self, mock_get_col):
+        col = make_mock_col(docs=[])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber(action="create", imsi=IMSI, data={
+            "security": {"k": "abc123", "opc": ""},
+        }))
+        assert r["defaulted_keys"] == ["opc"]
+        sec = col.insert_one.call_args[0][0]["security"]
+        assert (sec["k"], sec["opc"]) == ("abc123", DEFAULT_OPC)
+
+    @patch("tools.subscriber.get_subscribers_col")
+    def test_op_suppresses_opc_default(self, mock_get_col):
+        col = make_mock_col(docs=[])
+        mock_get_col.return_value = col
+        r = unwrap(subscriber(action="create", imsi=IMSI, data={
+            "security": {"k": "abc123", "op": "0123"},
+        }))
+        assert "defaulted_keys" not in r
+        assert col.insert_one.call_args[0][0]["security"]["opc"] == ""
 
 
 # ── delete ────────────────────────────────────────────────────────────────────

@@ -147,6 +147,10 @@ Single tool for all subscriber lifecycle operations. Pass `action` to select the
 - `action` (string, required): One of `"read"`, `"list"`, `"create"`, `"delete"`
 - `imsi` (string): IMSI digits (10-15) or SUPI format (`"imsi-<digits>"`). Required for read/create/delete.
 - `data` (dict): For `create` only. Subscriber fields deep-merged with defaults.
+  `security.k` / `security.opc` are optional — if omitted or empty, the standard
+  Open5GS/UERANSIM lab test values are used (`DEFAULT_K` / `DEFAULT_OPC` in
+  `_subscriber_util.py`) and the response includes `"defaulted_keys": ["k", "opc"]`
+  plus a WARNING in the summary. No OPc default is applied when `security.op` is given.
 - `limit` (int): For `list` only. Max documents to return (1–1000, default 100).
 - `filter` (dict): For `list` only. Equality filter on allowed keys:
   - `subscriber_status` (0=service_granted, 1=operator_barring)
